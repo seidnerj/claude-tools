@@ -20,4 +20,3 @@ htmlcov/
 temp/
 
 node_modules/
-uv.lock

@@ -1,25 +1,29 @@
 {
-    "name": "claude-tools",
-    "version": "0.1.0",
+    "bin": {
+        "llm-safety-check": "dist/bin/llm-safety-check.js"
+    },
+    "dependencies": {},
     "description": "TypeScript library for managing Claude Code session history, secrets, API keys, and more",
-    "type": "module",
-    "main": "dist/index.js",
-    "types": "dist/index.d.ts",
+    "devDependencies": {
+        "@types/node": "^22.15.3",
+        "@typescript-eslint/eslint-plugin": "^8.56.1",
+        "@typescript-eslint/parser": "^8.56.1",
+        "eslint": "^9.39.3",
+        "eslint-config-prettier": "^10.1.8",
+        "eslint-plugin-import": "^2.32.0",
+        "prettier": "^3.8.1",
+        "tsx": "^4.19.4",
+        "typescript": "^5.8.3",
+        "vitest": "^3.1.2"
+    },
+    "engines": {
+        "node": ">=20"
+    },
     "exports": {
         ".": {
             "import": "./dist/index.js",
             "types": "./dist/index.d.ts"
         }
-    },
-    "bin": {
-        "llm-safety-check": "dist/bin/llm-safety-check.js"
-    },
-    "scripts": {
-        "prepare": "tsc",
-        "build": "tsc",
-        "test": "vitest run",
-        "test:watch": "vitest",
-        "lint": "tsc --noEmit"
     },
     "keywords": [
         "claude",
@@ -28,14 +32,16 @@
         "mcp"
     ],
     "license": "MIT",
-    "dependencies": {},
-    "devDependencies": {
-        "@types/node": "^22.15.3",
-        "tsx": "^4.19.4",
-        "typescript": "^5.8.3",
-        "vitest": "^3.1.2"
+    "main": "dist/index.js",
+    "name": "claude-tools",
+    "scripts": {
+        "build": "tsc",
+        "lint": "tsc --noEmit",
+        "prepare": "tsc",
+        "test": "vitest run",
+        "test:watch": "vitest"
     },
-    "engines": {
-        "node": ">=20"
-    }
+    "type": "module",
+    "types": "dist/index.d.ts",
+    "version": "0.1.0"
 }

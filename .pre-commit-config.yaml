@@ -3,58 +3,89 @@
 # Run manually with: pre-commit run --all-files
 
 repos:
-  # Built-in pre-commit hooks
-  - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
-    hooks:
-      - id: trailing-whitespace
-        exclude: \.claude/settings\.local\.json$
+    # Built-in pre-commit hooks
+    - repo: https://github.com/pre-commit/pre-commit-hooks
+      rev: v5.0.0
+      hooks:
+          - id: trailing-whitespace
+            exclude: \.claude/settings\.local\.json$
 
-      - id: end-of-file-fixer
-        exclude: \.claude/settings\.local\.json$
+          - id: end-of-file-fixer
+            exclude: \.claude/settings\.local\.json$
 
-      - id: mixed-line-ending
-        name: normalize line endings
-        args: [--fix=lf]
-        exclude: \.claude/settings\.local\.json$
+          - id: mixed-line-ending
+            name: normalize line endings
+            args: [--fix=lf]
+            exclude: \.claude/settings\.local\.json$
 
-      - id: check-merge-conflict
-        name: check for merge conflicts
+          - id: check-merge-conflict
+            name: check for merge conflicts
 
-      - id: check-added-large-files
-        name: check for large files
-        args: ['--maxkb=1000']
+          - id: check-added-large-files
+            name: check for large files
+            args: ["--maxkb=1000"]
 
-      - id: check-json
-        name: check json
+          - id: check-json
+            name: check json
 
-      - id: check-yaml
-        name: check yaml
-        args: [--allow-multiple-documents]
+          - id: check-yaml
+            name: check yaml
+            args: [--allow-multiple-documents]
 
-      - id: pretty-format-json
-        name: pretty format JSON
-        args: [--autofix]
-        exclude: \.claude/settings\.local\.json$
+          - id: pretty-format-json
+            name: pretty format JSON
+            args: [--autofix, --indent, "4"]
+            exclude: \.claude/settings\.local\.json$
 
-  # Detect secrets
-  - repo: https://github.com/Yelp/detect-secrets
-    rev: v1.5.0
-    hooks:
-      - id: detect-secrets
-        args: ["--baseline", ".secrets.baseline"]
+    # Detect secrets
+    - repo: https://github.com/Yelp/detect-secrets
+      rev: v1.5.0
+      hooks:
+          - id: detect-secrets
+            args: ["--baseline", ".secrets.baseline"]
 
-  # Local hooks
-  - repo: local
-    hooks:
-      - id: check-claude-attribution
-        name: check commit message for Claude attribution
-        description: Prevent commits with Claude attribution
-        entry: bash scripts/check-claude-attribution.sh
-        language: system
-        stages: [commit-msg]
-        always_run: true
-        pass_filenames: true
+    # TypeScript hooks
+    - repo: local
+      hooks:
+          - id: prettier
+            name: prettier
+            entry: npx --prefix ts prettier --write --ignore-unknown
+            language: system
+            types_or: [ts, json, css, markdown, yaml]
+            exclude: "(node_modules|dist)/"
+
+          - id: eslint
+            name: eslint
+            entry: npx --prefix ts eslint --fix
+            language: system
+            types: [ts]
+            exclude: "(node_modules|dist)/"
+
+          - id: typescript-check
+            name: typescript type check
+            entry: bash -c 'cd ts && npx tsc --noEmit'
+            language: system
+            types: [ts]
+            pass_filenames: false
+
+          - id: run-tests
+            name: run tests
+            entry: bash -c 'cd ts && npx vitest run'
+            language: system
+            types: [ts]
+            pass_filenames: false
+
+    # Local hooks
+    - repo: local
+      hooks:
+          - id: check-claude-attribution
+            name: check commit message for Claude attribution
+            description: Prevent commits with Claude attribution
+            entry: bash scripts/check-claude-attribution.sh
+            language: system
+            stages: [commit-msg]
+            always_run: true
+            pass_filenames: true
 
 # Global settings
 default_stages: [pre-commit]

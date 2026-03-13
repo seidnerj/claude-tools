@@ -67,18 +67,23 @@ pre-commit install --hook-type commit-msg --hook-type pre-commit
 claude-tools/
 ├── ts/
 │   ├── src/
-│   │   ├── bin/                    # CLI entry points
+│   │   ├── bin/                        # CLI entry points (thin wrappers)
+│   │   │   ├── claude-find-session.ts
+│   │   │   ├── claude-redact-secrets.ts
+│   │   │   ├── claude-set-history.ts
+│   │   │   ├── claude-set-key.ts
+│   │   │   ├── claude-title-sessions.ts
 │   │   │   └── llm-safety-check.ts
-│   │   ├── __tests__/              # Tests (vitest)
-│   │   ├── find-session.ts         # Session search/filtering
-│   │   ├── redact-secrets.ts       # Secret redaction in session files
-│   │   ├── set-history.ts          # History management
-│   │   ├── set-key.ts              # API key storage (macOS Keychain)
-│   │   ├── title-sessions.ts       # LLM-powered session titling
-│   │   ├── llm-safety-check.ts     # LLM-powered command safety hook
-│   │   ├── utils.ts                # Shared utilities
-│   │   ├── types.ts                # Shared type definitions
-│   │   └── index.ts                # Package exports
+│   │   ├── __tests__/                  # Tests (vitest)
+│   │   ├── find-session.ts             # Session search/filtering
+│   │   ├── redact-secrets.ts           # Secret redaction in session files
+│   │   ├── set-history.ts              # History management
+│   │   ├── set-key.ts                  # API key storage (macOS Keychain)
+│   │   ├── title-sessions.ts           # LLM-powered session titling
+│   │   ├── llm-safety-check.ts         # LLM-powered command safety hook
+│   │   ├── utils.ts                    # Shared utilities
+│   │   ├── types.ts                    # Shared type definitions
+│   │   └── index.ts                    # Package exports
 │   └── package.json
 ├── scripts/
 │   └── check-claude-attribution.sh
@@ -87,4 +92,4 @@ claude-tools/
 
 ## Architecture
 
-Each feature is a standalone module exporting functions consumed by claude-tools-mcp. The only direct CLI entry point is `llm-safety-check.ts` (a Claude Code `PreToolUse` hook). Shared logic lives in `utils.ts` and types in `types.ts`. The modules operate on Claude Code session `.jsonl` files under `~/.claude/projects/`.
+Each feature is a standalone module exporting functions consumed by claude-tools-mcp. CLI entry points in `bin/` are thin wrappers that handle argument parsing and I/O, delegating all logic to the library modules. Shared logic lives in `utils.ts` and types in `types.ts`. The modules operate on Claude Code session `.jsonl` files under `~/.claude/projects/`.

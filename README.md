@@ -29,22 +29,38 @@ cd claude-tools/ts
 npm install
 ```
 
-## LLM Safety Hook
+## CLI Tools
 
-The only direct CLI entry point is `llm-safety-check`, a `PreToolUse` hook for Claude Code that sends Bash commands to Claude (with extended thinking) for safety evaluation.
+All CLI tools require `tsx` installed globally (`npm install -g tsx`). Each tool has a `--help` flag.
 
-### Setup
+| Command                 | Description                                             |
+| ----------------------- | ------------------------------------------------------- |
+| `claude-find-session`   | Search session history by text or LLM semantic search   |
+| `claude-title-sessions` | Generate AI titles for untitled sessions                |
+| `claude-redact-secrets` | Scan for and redact leaked secrets in session files     |
+| `claude-set-key`        | Manage per-directory API keys in macOS Keychain         |
+| `claude-set-history`    | Move conversation history when renaming/moving projects |
+| `llm-safety-check`      | PreToolUse hook that evaluates Bash commands for safety |
 
-Requires `tsx` installed globally:
+### Installation
+
+Symlink the CLI tools to your PATH:
 
 ```bash
-npm install -g tsx
+BIN_DIR="$(pwd)/ts/src/bin"
+sudo ln -sf "$BIN_DIR/claude-find-session.ts" /usr/local/bin/claude-find-session
+sudo ln -sf "$BIN_DIR/claude-redact-secrets.ts" /usr/local/bin/claude-redact-secrets
+sudo ln -sf "$BIN_DIR/claude-set-history.ts" /usr/local/bin/claude-set-history
+sudo ln -sf "$BIN_DIR/claude-set-key.ts" /usr/local/bin/claude-set-key
+sudo ln -sf "$BIN_DIR/claude-title-sessions.ts" /usr/local/bin/claude-title-sessions
 ```
 
-Symlink and configure:
+### LLM Safety Hook Setup
+
+The safety hook is a `PreToolUse` hook for Claude Code that sends Bash commands to Claude (with extended thinking) for safety evaluation.
 
 ```bash
-ln -sf "$(pwd)/ts/src/bin/llm-safety-check.ts" ~/.claude/hooks/llm-safety-check.ts
+sudo ln -sf "$(pwd)/ts/src/bin/llm-safety-check.ts" /usr/local/bin/llm-safety-check
 ```
 
 Add to `~/.claude/settings.json`:
@@ -58,7 +74,7 @@ Add to `~/.claude/settings.json`:
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "tsx ~/.claude/hooks/llm-safety-check.ts",
+                        "command": "llm-safety-check",
                         "timeout": 35
                     }
                 ]

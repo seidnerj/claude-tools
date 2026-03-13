@@ -35,7 +35,7 @@ repos:
           - id: pretty-format-json
             name: pretty format JSON
             args: [--autofix, --indent, "4"]
-            exclude: (\.claude/settings\.local\.json$|^ts/)
+            exclude: (\.claude/settings\.local\.json$|tsconfig\.json$)
 
     # Detect secrets
     - repo: https://github.com/Yelp/detect-secrets
@@ -49,28 +49,28 @@ repos:
       hooks:
           - id: prettier
             name: prettier
-            entry: npx --prefix ts prettier --write --ignore-unknown
+            entry: npx prettier --write --ignore-unknown
             language: system
             types_or: [ts, json, css, markdown, yaml]
             exclude: "(node_modules|dist)/"
 
           - id: eslint
             name: eslint
-            entry: bash -c 'cd ts && npx eslint --fix --no-error-on-unmatched-pattern "$@"' --
+            entry: npx eslint --fix --no-error-on-unmatched-pattern
             language: system
             types: [ts]
             exclude: "(node_modules|dist)/"
 
           - id: typescript-check
             name: typescript type check
-            entry: bash -c 'cd ts && npx tsc --noEmit'
+            entry: npx tsc --noEmit
             language: system
             types: [ts]
             pass_filenames: false
 
           - id: run-tests
             name: run tests
-            entry: bash -c 'cd ts && npx vitest run'
+            entry: npx vitest run
             language: system
             types: [ts]
             pass_filenames: false

@@ -10,7 +10,7 @@
 //   claude-title-sessions --model <id>     # model (default: haiku)
 // ---------------------------------------------------------------------------
 
-import { titleProject, titleAllProjects, titleProjectByPath } from "../title-sessions.js";
+import { titleAllProjects, titleProjectByPath } from "../title-sessions.js";
 import { requireProjectsDir, listProjectDirs } from "../utils.js";
 import type { TitleProjectResult } from "../types.js";
 

@@ -9,10 +9,8 @@
 //   claude-redact-secrets --dry-run        # report only, don't redact
 // ---------------------------------------------------------------------------
 
-import * as fs from "node:fs";
-import * as path from "node:path";
-import { scanProject, scanAllProjects, scanProjectByPath } from "../redact-secrets.js";
-import { requireProjectsDir, listProjectDirs, pathToDirname, PROJECTS_DIR } from "../utils.js";
+import { scanAllProjects, scanProjectByPath } from "../redact-secrets.js";
+import { requireProjectsDir, listProjectDirs } from "../utils.js";
 import type { ScanResult } from "../types.js";
 
 function printUsage(): void {

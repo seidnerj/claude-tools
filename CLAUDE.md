@@ -9,7 +9,7 @@ claude-tools is a TypeScript library for managing Claude Code sessions, API keys
 ## Quick Setup
 
 ```bash
-cd ts && npm install
+npm install
 pre-commit install --hook-type commit-msg --hook-type pre-commit
 ```
 
@@ -31,7 +31,7 @@ pre-commit install --hook-type commit-msg --hook-type pre-commit
 
 ## Test Policy
 
-**Every feature addition or code change must include corresponding test updates.** Tests live in `ts/src/__tests__/` and use vitest.
+**Every feature addition or code change must include corresponding test updates.** Tests live in `src/tests/` and use vitest.
 
 - Always add tests for new features
 - Update existing tests when modifying behavior
@@ -65,28 +65,27 @@ pre-commit install --hook-type commit-msg --hook-type pre-commit
 
 ```
 claude-tools/
-├── ts/
-│   ├── src/
-│   │   ├── bin/                        # CLI entry points (thin wrappers)
-│   │   │   ├── claude-find-session.ts
-│   │   │   ├── claude-redact-secrets.ts
-│   │   │   ├── claude-set-history.ts
-│   │   │   ├── claude-set-key.ts
-│   │   │   ├── claude-title-sessions.ts
-│   │   │   └── llm-safety-check.ts
-│   │   ├── __tests__/                  # Tests (vitest)
-│   │   ├── find-session.ts             # Session search/filtering
-│   │   ├── redact-secrets.ts           # Secret redaction in session files
-│   │   ├── set-history.ts              # History management
-│   │   ├── set-key.ts                  # API key storage (macOS Keychain)
-│   │   ├── title-sessions.ts           # LLM-powered session titling
-│   │   ├── llm-safety-check.ts         # LLM-powered command safety hook
-│   │   ├── utils.ts                    # Shared utilities
-│   │   ├── types.ts                    # Shared type definitions
-│   │   └── index.ts                    # Package exports
-│   └── package.json
+├── src/
+│   ├── bin/                        # CLI entry points (thin wrappers)
+│   │   ├── claude-find-session.ts
+│   │   ├── claude-redact-secrets.ts
+│   │   ├── claude-set-history.ts
+│   │   ├── claude-set-key.ts
+│   │   ├── claude-title-sessions.ts
+│   │   └── llm-safety-check.ts
+│   ├── tests/                      # Tests (vitest)
+│   ├── find-session.ts             # Session search/filtering
+│   ├── redact-secrets.ts           # Secret redaction in session files
+│   ├── set-history.ts              # History management
+│   ├── set-key.ts                  # API key storage (macOS Keychain)
+│   ├── title-sessions.ts           # LLM-powered session titling
+│   ├── llm-safety-check.ts         # LLM-powered command safety hook
+│   ├── utils.ts                    # Shared utilities
+│   ├── types.ts                    # Shared type definitions
+│   └── index.ts                    # Package exports
 ├── scripts/
 │   └── check-claude-attribution.sh
+├── package.json
 └── .pre-commit-config.yaml
 ```
 

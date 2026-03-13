@@ -10,9 +10,8 @@
 //   claude-find-session                              # interactive
 // ---------------------------------------------------------------------------
 
-import * as path from "node:path";
-import { searchProject, searchAllProjects, searchProjectByPath, llmSearchAll, llmSearchByPath } from "../find-session.js";
-import { requireProjectsDir, listProjectDirs, pathToDirname, PROJECTS_DIR } from "../utils.js";
+import { searchAllProjects, searchProjectByPath, llmSearchAll, llmSearchByPath } from "../find-session.js";
+import { requireProjectsDir, listProjectDirs } from "../utils.js";
 import type { ProjectSearchResult } from "../types.js";
 
 function printUsage(): void {

@@ -7,7 +7,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import type { SecretFinding, ScanResult } from "./types.js";
-import { PROJECTS_DIR, extractStrings, listProjectDirs, pathToDirname, preserveMtime, requireProjectsDir } from "./utils.js";
+import { PROJECTS_DIR, extractStrings, listProjectDirs, pathToDirname, requireProjectsDir } from "./utils.js";
 
 const REDACT_MARKER = "***REDACTED***";
 

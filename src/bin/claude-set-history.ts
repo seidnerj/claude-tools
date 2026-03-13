@@ -9,7 +9,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { moveHistory, cleanBrokenResumeArtifacts } from "../set-history.js";
+import { moveHistory } from "../set-history.js";
 import { requireProjectsDir, listProjectDirs, listSessions, sessionDescription, pathToDirname, dirnameToPath, PROJECTS_DIR } from "../utils.js";
 
 function printUsage(): void {

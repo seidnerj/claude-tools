@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Mock getApiKey before importing the module under test
 vi.mock("../utils.js", async (importOriginal) => {
-    const actual = await importOriginal<typeof import("../utils.js")>();
+    const actual = (await importOriginal()) as Record<string, unknown>;
     return { ...actual, getApiKey: vi.fn(() => null) };
 });
 

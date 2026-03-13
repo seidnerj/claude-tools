@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { pathToDirname, dirnameToPath, extractStrings, parseSession, sessionDescription, listSessions } from "../utils.js";
 
 // ---------------------------------------------------------------------------

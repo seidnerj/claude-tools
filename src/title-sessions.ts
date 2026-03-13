@@ -14,7 +14,6 @@ import {
     preserveMtime,
     requireApiKey,
     requireProjectsDir,
-    sessionDescription,
     DEFAULT_MODEL,
 } from "./utils.js";
 

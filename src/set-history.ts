@@ -5,7 +5,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { MoveHistoryResult } from "./types.js";
-import { PROJECTS_DIR, HISTORY_FILE, pathToDirname, dirnameToPath, preserveMtime, requireProjectsDir } from "./utils.js";
+import { PROJECTS_DIR, HISTORY_FILE, pathToDirname, preserveMtime, requireProjectsDir } from "./utils.js";
 
 /** Remove broken resume artifacts from session .jsonl files.
  *

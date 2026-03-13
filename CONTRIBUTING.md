@@ -4,11 +4,8 @@
 
 ```bash
 git clone https://github.com/seidnerj/claude-tools.git
-cd claude-tools/ts
+cd claude-tools
 npm install
-
-# Install pre-commit hooks (from repo root)
-cd ..
 pre-commit install --hook-type commit-msg --hook-type pre-commit
 ```
 
@@ -24,11 +21,10 @@ pre-commit install --hook-type commit-msg --hook-type pre-commit
 Every change must include corresponding tests:
 
 ```bash
-cd ts
 npx vitest run
 ```
 
-Tests use [vitest](https://vitest.dev/). Tests live in `ts/src/__tests__/`.
+Tests use [vitest](https://vitest.dev/). Tests live in `src/tests/`.
 
 ## Pre-commit Hooks
 

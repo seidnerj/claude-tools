@@ -25,7 +25,7 @@ For development:
 
 ```bash
 git clone https://github.com/seidnerj/claude-tools.git
-cd claude-tools/ts
+cd claude-tools
 npm install
 ```
 
@@ -47,7 +47,7 @@ All CLI tools require `tsx` installed globally (`npm install -g tsx`). Each tool
 Symlink the CLI tools to your PATH:
 
 ```bash
-BIN_DIR="$(pwd)/ts/src/bin"
+BIN_DIR="$(pwd)/src/bin"
 sudo ln -sf "$BIN_DIR/claude-find-session.ts" /usr/local/bin/claude-find-session
 sudo ln -sf "$BIN_DIR/claude-redact-secrets.ts" /usr/local/bin/claude-redact-secrets
 sudo ln -sf "$BIN_DIR/claude-set-history.ts" /usr/local/bin/claude-set-history
@@ -60,7 +60,7 @@ sudo ln -sf "$BIN_DIR/claude-title-sessions.ts" /usr/local/bin/claude-title-sess
 The safety hook is a `PreToolUse` hook for Claude Code that sends Bash commands to Claude (with extended thinking) for safety evaluation.
 
 ```bash
-sudo ln -sf "$(pwd)/ts/src/bin/llm-safety-check.ts" /usr/local/bin/llm-safety-check
+sudo ln -sf "$(pwd)/src/bin/llm-safety-check.ts" /usr/local/bin/llm-safety-check
 ```
 
 Add to `~/.claude/settings.json`:
@@ -128,7 +128,6 @@ import {
 ## Development
 
 ```bash
-cd ts
 npm install
 npm test              # Run tests (vitest)
 npm run test:watch    # Watch mode

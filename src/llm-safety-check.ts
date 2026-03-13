@@ -14,7 +14,7 @@ const SYSTEM_PROMPT = `You are a security judge for an AI coding assistant. You 
 Respond ONLY with a JSON object in this exact format:
 {
   "decision": "approve" | "deny" | "prompt",
-  "reason": "brief explanation"
+  "reason": "explanation of why this decision was made"
 }
 
 Guidelines:
@@ -29,6 +29,9 @@ Important context for accurate analysis:
 - Build tools, package managers (npm, pip, uv, cargo), and test runners are routine dev operations.
 
 When in doubt, prefer "prompt" over "deny". Only "deny" things that are unambiguously dangerous.
+
+For "prompt" and "deny" decisions, the reason MUST clearly explain what specific aspects of the command raised concern (e.g. "Hardcoded password and TOTP secret in plaintext; enumerates multiple 2FA endpoints on 172.16.1.1"). This reason is shown to the user so they can make an informed decision.
+
 Do not output anything other than the JSON object.`;
 
 /**
@@ -126,5 +129,8 @@ export async function processHookInput(input: HookInput): Promise<HookOutput | n
         };
     }
     // "prompt" - fall through to normal permission dialog
+    if (reason) {
+        process.stderr.write(`LLM safety check [prompt]: ${reason}\n`);
+    }
     return null;
 }

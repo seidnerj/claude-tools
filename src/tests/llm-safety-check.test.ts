@@ -153,6 +153,32 @@ describe("processHookInput", () => {
         expect(result).toBeNull();
     });
 
+    it("logs reason to stderr for prompt decision", async () => {
+        const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+        mockFetch.mockResolvedValueOnce(mockApiResponse("prompt", "Contains hardcoded credentials"));
+
+        await processHookInput({
+            tool_name: "Bash",
+            tool_input: { command: "curl -u user:pass example.com" },
+        });
+
+        expect(stderrSpy).toHaveBeenCalledWith("LLM safety check [prompt]: Contains hardcoded credentials\n");
+        stderrSpy.mockRestore();
+    });
+
+    it("does not log to stderr for prompt decision with empty reason", async () => {
+        const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+        mockFetch.mockResolvedValueOnce(mockApiResponse("prompt", ""));
+
+        await processHookInput({
+            tool_name: "Bash",
+            tool_input: { command: "curl example.com" },
+        });
+
+        expect(stderrSpy).not.toHaveBeenCalled();
+        stderrSpy.mockRestore();
+    });
+
     it("returns null on API failure (fall through)", async () => {
         mockFetch.mockRejectedValueOnce(new Error("timeout"));
 

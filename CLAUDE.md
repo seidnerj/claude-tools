@@ -13,6 +13,10 @@ npm install
 pre-commit install --hook-type commit-msg --hook-type pre-commit
 ```
 
+## Inline Script Rules
+
+**Never include comments in inline/temporary scripts** executed via Bash tool (e.g. `python3 -c "..."`, `node -e "..."`, `ruby -e "..."`, heredoc scripts). These are ephemeral and don't need documentation. Comments containing `#`, `//`, or similar markers after quoted newlines trigger Claude Code's built-in safety heuristic ("quoted newline followed by a #-prefixed line"), causing unnecessary permission prompts. If a script is complex enough to need comments, write it to a file instead.
+
 ## Code Provenance Policy
 
 **All code must be written independently.** Never directly copy or adapt code from any external source - always study the concept and implement it yourself from scratch. Specifically:

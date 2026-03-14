@@ -113,8 +113,9 @@ export interface KeychainListResult {
 
 /** LLM safety check decision */
 export interface SafetyCheckResult {
-    decision: "approve" | "deny" | "prompt";
+    decision: "approve" | "deny" | "prompt" | "needs_context";
     reason: string;
+    files?: string[];
 }
 
 /** Input from the Claude Code hook system (PreToolUse) */

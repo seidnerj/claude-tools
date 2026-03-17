@@ -157,6 +157,30 @@ export interface KeychainListResult {
     hasDefaultKey: boolean;
 }
 
+/** Configuration for a single MCP server */
+export interface McpServerConfig {
+    type?: "stdio" | "sse" | "http";
+    command?: string;
+    args?: string[];
+    env?: Record<string, string>;
+    url?: string;
+}
+
+/** An MCP server entry with its name and scope */
+export interface McpServerEntry {
+    name: string;
+    config: McpServerConfig;
+    scope: "global" | "project";
+    projectPath?: string;
+}
+
+/** Result of an MCP server mutation operation */
+export interface McpServerResult {
+    success: boolean;
+    backupPath?: string;
+    server?: McpServerEntry;
+}
+
 /** LLM safety check decision */
 export interface SafetyCheckResult {
     decision: "approve" | "deny" | "prompt" | "needs_context";

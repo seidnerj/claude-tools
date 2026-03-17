@@ -35,6 +35,17 @@ export {
 } from "./set-key.js";
 export { checkCommandSafety, processHookInput } from "./llm-safety-check.js";
 export {
+    readClaudeConfig,
+    writeClaudeConfig,
+    backupClaudeConfig,
+    restoreMcpBackup,
+    listMcpServers,
+    getMcpServer,
+    addMcpServer,
+    updateMcpServer,
+    removeMcpServer,
+} from "./mcp-servers.js";
+export {
     pathToDirname,
     dirnameToPath,
     requireProjectsDir,

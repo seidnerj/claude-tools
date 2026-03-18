@@ -293,3 +293,55 @@ MCP servers are configured in `~/.claude.json`:
 
 Server enable/disable state is tracked separately (not in config file) via the
 `mcp_toggle` IPC message and an internal `cm1(serverName)` check function.
+
+## Related Feature Requests (as of 2026-03-18)
+
+Programmatic MCP server control is a well-requested feature with no official
+implementation timeline.
+
+### Canonical issue
+
+- **[#10447](https://github.com/anthropics/claude-code/issues/10447)** (open,
+  43 upvotes) - "CLI Commands for MCP Server Enable/Disable (Hook Automation
+  Support)". Requests `claude mcp enable/disable/toggle/status` CLI commands
+  that work mid-session without restart. Primary motivation is hook integration
+  (SessionStart, PreToolUse, Stop hooks) for context window optimization.
+
+### Duplicates and related
+
+- **[#21745](https://github.com/anthropics/claude-code/issues/21745)** (closed
+  as dup of #10447, 10 upvotes) - "Programmatic API for enabling/disabling MCPs
+  without restart". Confirms that editing `~/.claude.json` programmatically
+  works but changes only apply after restart. Proposes CLI commands, a dedicated
+  tool (`MCPEnable`/`MCPDisable`/`MCPReload`), or a FIFO-based IPC endpoint.
+
+- **[#14067](https://github.com/anthropics/claude-code/issues/14067)** (closed
+  stale, 2 upvotes) - "Expose MCP Server Toggle as a Claude-Invokable Tool for
+  Skills". Specifically asks for an internal tool that Claude can call
+  mid-conversation, complementary to #10447's external CLI approach.
+
+- **[#7174](https://github.com/anthropics/claude-code/issues/7174)** (closed,
+  was assigned to `ollie-anthropic`) - Bug report about `/mcp` reconnect not
+  actually reloading Python modules in stdio servers.
+
+### Community findings vs. our reverse engineering
+
+The community independently reached the same conclusions documented here:
+
+1. The `/mcp` TUI menu can toggle/reconnect servers without restart (the
+   internal mechanism exists)
+2. Editing `~/.claude.json` from a skill or hook does NOT trigger hot-reload
+3. There is no programmatic way to invoke the reload mechanism
+
+Our reverse engineering explains _why_: the reload is triggered via the
+`control_request` IPC protocol on the CLI's stdin pipe, which is only accessible
+to the parent process (VS Code extension or Agent SDK). In terminal mode, stdin
+is the TTY (for keyboard input), not a JSON IPC channel. Child processes
+(MCP servers, Bash tool commands, hooks) have no path to the CLI's stdin.
+
+Additional blockers confirmed on macOS:
+
+- `TIOCSTI` ioctl (keystroke injection) is disabled at the kernel level
+- Debugger attach is blocked by SIP/code signing on the native binary
+- AppleScript keystroke injection targets the focused app, and the CLI is busy
+  executing the tool call that would send the keystrokes (deadlock)

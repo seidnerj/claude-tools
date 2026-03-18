@@ -345,3 +345,75 @@ Additional blockers confirmed on macOS:
 - Debugger attach is blocked by SIP/code signing on the native binary
 - AppleScript keystroke injection targets the focused app, and the CLI is busy
   executing the tool call that would send the keystrokes (deadlock)
+
+## Config File Watching
+
+The CLI does **not** watch `~/.claude.json` for changes. The only file watcher
+in the CLI bundle is for keybindings (using chokidar). Config is read:
+
+- **At startup** - once during initialization
+- **When `/mcp` TUI is opened** - re-reads via `Xp()` in a React `useEffect`
+- **On `mcp_set_servers` IPC** - the extension sends the full server list, CLI
+  diffs and reconciles (connects new, disconnects removed, reconnects changed)
+- **Between turns in headless/remote mode** - gated behind
+  `CLAUDE_CODE_REMOTE=true` env var
+
+The reconciliation infrastructure (`EYz` in minified code) fully supports
+diffing old vs. new config: it disconnects removed/changed servers, connects
+added/changed servers, and updates the tool registry. This infrastructure is
+already wired up for all modes except interactive terminal.
+
+## CLAUDE_CODE_REMOTE Environment Variable
+
+Setting `CLAUDE_CODE_REMOTE=true` enables automatic config re-read between
+turns, which would allow MCP reconnection by modifying `~/.claude.json`. However
+it also changes other behaviors:
+
+| Area                   | Effect                                                         |
+| ---------------------- | -------------------------------------------------------------- |
+| **MCP config refresh** | Re-reads config between turns and reconciles servers           |
+| **Node.js heap**       | Sets `--max-old-space-size=8192` (8GB)                         |
+| **Git system context** | Skips `git status` in system prompt (no branch/status context) |
+| **Git clone URLs**     | Uses HTTPS instead of SSH for GitHub repos                     |
+| **Hook progress**      | Enables streaming hook progress events                         |
+| **Bash progress**      | Enables bash command progress updates                          |
+| **Telemetry**          | Tags events with `isClaudeCodeRemote: true`                    |
+
+The most impactful side effect is losing `git status` from the system prompt.
+
+## Potential Approaches for Programmatic MCP Control
+
+### 1. VS Code stdin/stdout proxy (most promising)
+
+Inject a proxy between the VS Code extension and the CLI process:
+
+```
+VS Code Extension
+  |  spawns (thinks it's the real CLI)
+  v
+Proxy Script (Node.js)
+  |  spawns real CLI, forwards stdin/stdout bidirectionally
+  |  logs all JSON messages
+  |  listens on Unix socket for injected commands
+  v
+Real Claude CLI (JSON IPC mode)
+```
+
+The proxy can inject `control_request` messages (including `mcp_reconnect`)
+into the CLI's stdin. Viable because VS Code mode uses structured JSON IPC.
+
+### 2. Terminal CLI with CLAUDE_CODE_REMOTE=true
+
+Set the env var to enable between-turn config refresh, then modify
+`~/.claude.json` to trigger MCP reconnection. Trade-off: loses git status
+context in system prompt.
+
+### 3. Terminal stdin/stdout proxy (complex)
+
+Same proxy concept but for the terminal CLI. Harder because the CLI expects
+raw terminal I/O (Ink/React TUI), not JSON. Would require PTY forwarding,
+and injection would be limited to simulating keystrokes (fragile).
+
+The CLI does support `--input-format=stream-json --output-format=stream-json`
+flags which switch to JSON IPC mode, but this disables the TUI entirely -
+the proxy would need to reimplement a terminal UI.

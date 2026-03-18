@@ -75,6 +75,7 @@ pre-commit install --hook-type commit-msg --hook-type pre-commit
 claude-tools/
 ├── src/
 │   ├── bin/                        # CLI entry points (thin wrappers)
+│   │   ├── claude-copy-history.ts
 │   │   ├── claude-find-session.ts
 │   │   ├── claude-redact-secrets.ts
 │   │   ├── claude-set-history.ts

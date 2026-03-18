@@ -1,5 +1,6 @@
 {
     "bin": {
+        "claude-copy-history": "dist/bin/claude-copy-history.js",
         "claude-find-session": "dist/bin/claude-find-session.js",
         "claude-redact-secrets": "dist/bin/claude-redact-secrets.js",
         "claude-set-history": "dist/bin/claude-set-history.js",

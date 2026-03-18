@@ -1,11 +1,102 @@
 // ---------------------------------------------------------------------------
-// Move Claude Code project history when renaming/moving a project directory
+// Copy, move, and delete Claude Code project history
 // ---------------------------------------------------------------------------
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { MoveHistoryResult } from "./types.js";
+import type { CopyHistoryResult, DeleteHistoryResult, MoveHistoryResult } from "./types.js";
 import { PROJECTS_DIR, HISTORY_FILE, pathToDirname, preserveMtime, requireProjectsDir } from "./utils.js";
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+/** Escape a string for use in a RegExp. */
+function escapeRegExp(s: string): string {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Check whether a path is an existing directory. */
+function isDir(p: string): boolean {
+    return fs.existsSync(p) && fs.statSync(p).isDirectory();
+}
+
+/** Replace all occurrences of oldPath references with newPath in session .jsonl files. */
+async function updateSessionRefs(projectDir: string, oldPath: string, newPath: string): Promise<number> {
+    let updated = 0;
+    const oldRef = `"${oldPath}"`;
+    const newRef = `"${newPath}"`;
+    const pattern = new RegExp(escapeRegExp(oldRef), "g");
+
+    for (const fname of fs.readdirSync(projectDir).sort()) {
+        if (!fname.endsWith(".jsonl")) continue;
+        const filepath = path.join(projectDir, fname);
+        if (!fs.statSync(filepath).isFile()) continue;
+
+        let content = fs.readFileSync(filepath, "utf-8");
+        if (content.includes(oldRef)) {
+            content = content.replace(pattern, newRef);
+            await preserveMtime(filepath, () => {
+                fs.writeFileSync(filepath, content);
+            });
+            updated++;
+        }
+    }
+    return updated;
+}
+
+/** Replace path references in sessions-index.json. */
+function updateSessionsIndex(projectDir: string, oldDirName: string, newDirName: string, oldPath: string, newPath: string): boolean {
+    const sessionsIndex = path.join(projectDir, "sessions-index.json");
+    if (!fs.existsSync(sessionsIndex)) return false;
+
+    let content = fs.readFileSync(sessionsIndex, "utf-8");
+    content = content.replace(new RegExp(escapeRegExp(oldDirName), "g"), newDirName);
+    content = content.replace(new RegExp(escapeRegExp(`"${oldPath}"`), "g"), `"${newPath}"`);
+    fs.writeFileSync(sessionsIndex, content);
+    return true;
+}
+
+/** Duplicate history.jsonl entries that reference sourcePath, adding copies with destPath. */
+function duplicateHistoryEntries(sourcePath: string, destPath: string): boolean {
+    if (!fs.existsSync(HISTORY_FILE)) return false;
+
+    const content = fs.readFileSync(HISTORY_FILE, "utf-8");
+    const sourceRef = `"${sourcePath}"`;
+    if (!content.includes(sourceRef)) return false;
+
+    const pattern = new RegExp(escapeRegExp(sourceRef), "g");
+    const lines = content.split("\n");
+    const newLines: string[] = [];
+    for (const line of lines) {
+        if (line.includes(sourceRef)) {
+            newLines.push(line.replace(pattern, `"${destPath}"`));
+        }
+    }
+    if (newLines.length === 0) return false;
+
+    const trailing = content.endsWith("\n") ? "" : "\n";
+    fs.writeFileSync(HISTORY_FILE, content + trailing + newLines.join("\n") + "\n");
+    return true;
+}
+
+/** Remove history.jsonl entries that reference targetPath. */
+function removeHistoryEntries(targetPath: string): boolean {
+    if (!fs.existsSync(HISTORY_FILE)) return false;
+
+    const content = fs.readFileSync(HISTORY_FILE, "utf-8");
+    const targetRef = `"${targetPath}"`;
+    if (!content.includes(targetRef)) return false;
+
+    const lines = content.split("\n");
+    const filtered = lines.filter((line) => !line.includes(targetRef));
+    fs.writeFileSync(HISTORY_FILE, filtered.join("\n"));
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
 /** Remove broken resume artifacts from session .jsonl files.
  *
@@ -74,6 +165,75 @@ export function cleanBrokenResumeArtifacts(projectDir: string): number {
     return cleaned;
 }
 
+/** Copy Claude Code history from one project path to another, keeping the source intact.
+ *
+ * Copies the project directory under ~/.claude/projects/, fixes cwd
+ * references in the copy, updates sessions-index.json, and adds entries
+ * to the global history.jsonl.
+ */
+export async function copyHistory(sourcePath: string, destPath: string): Promise<CopyHistoryResult> {
+    requireProjectsDir();
+
+    sourcePath = path.resolve(sourcePath).replace(/\/+$/, "");
+    destPath = path.resolve(destPath).replace(/\/+$/, "");
+
+    if (sourcePath === destPath) {
+        throw new Error("Source and destination paths are identical.");
+    }
+
+    const sourceDirName = pathToDirname(sourcePath);
+    const destDirName = pathToDirname(destPath);
+    const sourceProjectDir = path.join(PROJECTS_DIR, sourceDirName);
+    const destProjectDir = path.join(PROJECTS_DIR, destDirName);
+
+    if (!isDir(sourceProjectDir)) {
+        throw new Error(`No Claude history found for source path: ${sourcePath}`);
+    }
+    if (isDir(destProjectDir)) {
+        throw new Error(`Claude history already exists for destination path: ${destPath}`);
+    }
+
+    fs.cpSync(sourceProjectDir, destProjectDir, { recursive: true });
+
+    const sessionFilesUpdated = await updateSessionRefs(destProjectDir, sourcePath, destPath);
+    const sessionsIndexUpdated = updateSessionsIndex(destProjectDir, sourceDirName, destDirName, sourcePath, destPath);
+    const historyFileUpdated = duplicateHistoryEntries(sourcePath, destPath);
+    const brokenArtifactsCleaned = cleanBrokenResumeArtifacts(destProjectDir);
+
+    return {
+        sourcePath,
+        destPath,
+        sessionFilesUpdated,
+        sessionsIndexUpdated,
+        historyFileUpdated,
+        brokenArtifactsCleaned,
+    };
+}
+
+/** Delete Claude Code history for a project path.
+ *
+ * Removes the project directory under ~/.claude/projects/ and cleans up
+ * entries from the global history.jsonl.
+ */
+export async function deleteHistory(targetPath: string): Promise<DeleteHistoryResult> {
+    requireProjectsDir();
+
+    targetPath = path.resolve(targetPath).replace(/\/+$/, "");
+
+    const dirName = pathToDirname(targetPath);
+    const projectDir = path.join(PROJECTS_DIR, dirName);
+
+    if (!isDir(projectDir)) {
+        throw new Error(`No Claude history found for path: ${targetPath}`);
+    }
+
+    fs.rmSync(projectDir, { recursive: true });
+
+    const historyFileUpdated = removeHistoryEntries(targetPath);
+
+    return { targetPath, historyFileUpdated };
+}
+
 /** Move Claude Code history from one project path to another.
  *
  * Renames the project directory under ~/.claude/projects/, fixes cwd
@@ -95,8 +255,8 @@ export async function moveHistory(oldPath: string, newPath: string): Promise<Mov
     const oldProjectDir = path.join(PROJECTS_DIR, oldDirName);
     const newProjectDir = path.join(PROJECTS_DIR, newDirName);
 
-    const oldExists = fs.existsSync(oldProjectDir) && fs.statSync(oldProjectDir).isDirectory();
-    const newExists = fs.existsSync(newProjectDir) && fs.statSync(newProjectDir).isDirectory();
+    const oldExists = isDir(oldProjectDir);
+    const newExists = isDir(newProjectDir);
 
     if (oldExists && newExists) {
         throw new Error("Both old and new project directories exist. Cannot merge automatically.");
@@ -106,54 +266,37 @@ export async function moveHistory(oldPath: string, newPath: string): Promise<Mov
         throw new Error("No Claude history found for either path.");
     }
 
-    // Rename project directory
     if (oldExists) {
-        fs.renameSync(oldProjectDir, newProjectDir);
+        // Normal case: copy to new location, then delete old
+        const copyResult = await copyHistory(oldPath, newPath);
+        const deleteResult = await deleteHistory(oldPath);
+
+        return {
+            oldPath,
+            newPath,
+            sessionFilesUpdated: copyResult.sessionFilesUpdated,
+            sessionsIndexUpdated: copyResult.sessionsIndexUpdated,
+            historyFileUpdated: copyResult.historyFileUpdated || deleteResult.historyFileUpdated,
+            brokenArtifactsCleaned: copyResult.brokenArtifactsCleaned,
+        };
     }
 
-    // Fix session .jsonl files (cwd fields)
-    let sessionFilesUpdated = 0;
-    for (const fname of fs.readdirSync(newProjectDir).sort()) {
-        if (!fname.endsWith(".jsonl")) continue;
-        const filepath = path.join(newProjectDir, fname);
-        if (!fs.statSync(filepath).isFile()) continue;
+    // Edge case: directory already moved/renamed outside of this tool,
+    // just update the stale path references
+    const sessionFilesUpdated = await updateSessionRefs(newProjectDir, oldPath, newPath);
+    const sessionsIndexUpdated = updateSessionsIndex(newProjectDir, oldDirName, newDirName, oldPath, newPath);
 
-        let content = fs.readFileSync(filepath, "utf-8");
-        const oldRef = `"${oldPath}"`;
-        const newRef = `"${newPath}"`;
-        if (content.includes(oldRef)) {
-            content = content.replace(new RegExp(oldRef.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), newRef);
-            await preserveMtime(filepath, () => {
-                fs.writeFileSync(filepath, content);
-            });
-            sessionFilesUpdated++;
-        }
-    }
-
-    // Fix sessions-index.json
-    let sessionsIndexUpdated = false;
-    const sessionsIndex = path.join(newProjectDir, "sessions-index.json");
-    if (fs.existsSync(sessionsIndex)) {
-        let content = fs.readFileSync(sessionsIndex, "utf-8");
-        content = content.replace(new RegExp(oldDirName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), newDirName);
-        content = content.replace(new RegExp(`"${oldPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`, "g"), `"${newPath}"`);
-        fs.writeFileSync(sessionsIndex, content);
-        sessionsIndexUpdated = true;
-    }
-
-    // Fix global history.jsonl
     let historyFileUpdated = false;
     if (fs.existsSync(HISTORY_FILE)) {
         let content = fs.readFileSync(HISTORY_FILE, "utf-8");
         const oldRef = `"${oldPath}"`;
         if (content.includes(oldRef)) {
-            content = content.replace(new RegExp(oldRef.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), `"${newPath}"`);
+            content = content.replace(new RegExp(escapeRegExp(oldRef), "g"), `"${newPath}"`);
             fs.writeFileSync(HISTORY_FILE, content);
             historyFileUpdated = true;
         }
     }
 
-    // Clean broken resume artifacts
     const brokenArtifactsCleaned = cleanBrokenResumeArtifacts(newProjectDir);
 
     return {

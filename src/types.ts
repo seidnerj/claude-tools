@@ -114,6 +114,22 @@ export interface ScanResult {
     redactedCount?: number;
 }
 
+/** Result of copying history from one path to another */
+export interface CopyHistoryResult {
+    sourcePath: string;
+    destPath: string;
+    sessionFilesUpdated: number;
+    sessionsIndexUpdated: boolean;
+    historyFileUpdated: boolean;
+    brokenArtifactsCleaned: number;
+}
+
+/** Result of deleting history for a path */
+export interface DeleteHistoryResult {
+    targetPath: string;
+    historyFileUpdated: boolean;
+}
+
 /** Result of moving history from one path to another */
 export interface MoveHistoryResult {
     oldPath: string;

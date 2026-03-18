@@ -18,7 +18,7 @@ export {
 export { getSynonyms, expandWithSynonyms } from "./synonyms.js";
 export { titleProject, titleAllProjects, titleProjectByPath } from "./title-sessions.js";
 export { scanProject, scanAllProjects, scanProjectByPath, requireDetectSecrets } from "./redact-secrets.js";
-export { moveHistory, cleanBrokenResumeArtifacts } from "./set-history.js";
+export { copyHistory, deleteHistory, moveHistory, cleanBrokenResumeArtifacts } from "./set-history.js";
 export {
     getKey,
     storeKey,

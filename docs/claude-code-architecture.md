@@ -76,7 +76,52 @@ execution, and MCP management happens in the CLI process. The extension handles:
 
 ## IPC Protocol
 
-The extension and CLI communicate via JSON messages on stdin/stdout.
+The extension and CLI communicate via a **newline-delimited JSON protocol over
+stdin/stdout pipes**. Each message is one JSON object per line. The parent
+process (extension/SDK) writes to the CLI's stdin; the CLI writes responses to
+its stdout. This is the only way to send control messages to the CLI - there is
+no HTTP API, Unix socket, or file-based signaling.
+
+### Message format
+
+Requests from the SDK/extension to the CLI are wrapped as:
+
+```json
+{
+    "request_id": "<random-alphanumeric>",
+    "type": "control_request",
+    "request": { "subtype": "mcp_reconnect", "serverName": "my-server" }
+}
+```
+
+Responses from the CLI are matched back by `request_id`:
+
+```json
+{ "request_id": "<same-id>", "subtype": "success" }
+{ "request_id": "<same-id>", "subtype": "error", "error": "..." }
+```
+
+The SDK (`yP` class in the extension bundle) maintains a `pendingControlResponses`
+map keyed by `request_id`. When a response arrives on stdout, it routes it to the
+original Promise's resolve/reject handler.
+
+### Full message flow example (MCP reconnect)
+
+```
+1. User clicks "Reconnect" in VS Code webview
+2. Webview posts message to extension: {case: "reconnect_mcp_server", ...}
+3. Extension dispatch handler calls channel.query.reconnectMcpServer(name)
+4. SDK's conversation controller (yP) builds a control_request:
+   {request_id: "abc123", type: "control_request",
+    request: {subtype: "mcp_reconnect", serverName: "my-server"}}
+5. SDK calls transport.write(JSON.stringify(message) + "\n")
+6. ProcessTransport (TP) writes the JSON line to the CLI's process.stdin pipe
+7. CLI reads the line from its stdin, dispatches on subtype
+8. CLI performs disconnect + reconnect internally
+9. CLI writes response JSON line to its stdout
+10. ProcessTransport reads it via readline on process.stdout
+11. SDK matches request_id, resolves the pending Promise
+```
 
 ### Request subtypes (extension -> CLI)
 
@@ -202,9 +247,12 @@ reconnect operates on the CLI's in-memory state:
 - It clears a memoized cache inside the CLI process
 - It re-creates the connection and updates the in-memory tool registry
 
-There is no HTTP API, file-based signal, or other mechanism to request a
-reconnect from outside the CLI process. The only entry point is the stdin/stdout
-IPC protocol, which is consumed by the VS Code extension (or the Agent SDK).
+The only way to send a reconnect command is by writing a `control_request` JSON
+line to the CLI process's stdin pipe - which requires being the parent process
+that spawned it. There is no HTTP API, Unix socket, file-based signal, or other
+mechanism to request a reconnect from outside. The stdin/stdout IPC protocol is
+consumed exclusively by the VS Code extension (or any program using the Agent
+SDK to spawn the CLI).
 
 ### Possible workarounds
 

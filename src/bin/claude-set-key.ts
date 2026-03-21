@@ -124,21 +124,6 @@ async function handleSet(ask: AskFn, directory: string, entries: ReturnType<type
     } else {
         console.log(`Key is named "${existingName}".`);
     }
-
-    // Offer .envrc setup
-    const envrcChoice = await ask("Set up .envrc for automatic key loading? (y/N): ");
-    if (envrcChoice.toLowerCase() === "y") {
-        const result = ensureEnvrc(directory);
-        if (result.alreadyPresent) {
-            console.log(".envrc already contains keychain lookup.");
-        } else if (result.upgraded) {
-            console.log("Upgraded .envrc keychain lookup to current version.");
-        } else if (result.created) {
-            console.log("Created .envrc with keychain lookup.");
-        } else if (result.appended) {
-            console.log("Appended keychain lookup to existing .envrc.");
-        }
-    }
 }
 
 async function handleDelete(ask: AskFn, directory: string, entries: ReturnType<typeof listKeychainEntries>): Promise<void> {
@@ -280,6 +265,20 @@ async function main(): Promise<void> {
         }
     } catch {
         // No default key present, nothing to capture
+    }
+
+    // Ensure .envrc has the current keychain lookup snippet
+    try {
+        const envrc = ensureEnvrc(directory);
+        if (envrc.upgraded) {
+            console.log(".envrc keychain lookup upgraded to current version.");
+        } else if (envrc.created) {
+            console.log("Created .envrc with keychain lookup.");
+        } else if (envrc.appended) {
+            console.log("Appended keychain lookup to existing .envrc.");
+        }
+    } catch {
+        // Non-fatal: .envrc setup failed (e.g. permissions)
     }
 
     console.log(`Directory: ${directory}`);

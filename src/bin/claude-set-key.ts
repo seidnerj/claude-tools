@@ -14,6 +14,7 @@ import {
     getDefaultKey,
     getKeyName,
     saveKeyName,
+    captureDefaultKey,
     listKeychainEntries,
     listCapturedKeys,
     getCapturedKey,
@@ -258,6 +259,17 @@ async function main(): Promise<void> {
     }
 
     const directory = process.cwd();
+
+    // Snapshot the current default key into a numbered slot if it's new
+    try {
+        const slot = captureDefaultKey();
+        if (slot !== null) {
+            console.log(`New key detected - saved as Key ${slot}.`);
+        }
+    } catch {
+        // No default key present, nothing to capture
+    }
+
     console.log(`Directory: ${directory}`);
     console.log();
 

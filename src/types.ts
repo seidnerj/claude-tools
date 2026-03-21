@@ -163,6 +163,17 @@ export interface KeychainEntry {
     exists: boolean;
 }
 
+/** Result of validating an API key against the Anthropic API */
+export interface KeyValidationResult {
+    valid: boolean;
+    /** Present when valid is false */
+    error?: "invalid_key" | "quota_exhausted" | "network_error" | "unknown";
+    /** Raw error message from the API */
+    message?: string;
+    /** ISO date string for when quota resets (only present when error is "quota_exhausted") */
+    quotaResetsAt?: string;
+}
+
 /** A captured "Claude Code Key N" keychain entry */
 export interface CapturedKeyEntry {
     /** 1-based slot number */

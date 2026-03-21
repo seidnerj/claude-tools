@@ -4,20 +4,29 @@
 
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
+import * as https from "node:https";
 import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
-import type { CapturedKeyEntry, KeychainEntry, KeychainListResult } from "./types.js";
+import type { CapturedKeyEntry, KeychainEntry, KeychainListResult, KeyValidationResult } from "./types.js";
 
 function getConfigFile(): string {
     return path.join(os.homedir(), ".claude", "key-config.json");
 }
 
-const ENVRC_SNIPPET = `ENCODED_DIR=$(echo -n "$PWD" | base64)
-API_KEY=$(security find-generic-password -s "Claude Code $ENCODED_DIR" -w 2>/dev/null)
-
-if [ -n "$API_KEY" ]; then
-  export ANTHROPIC_API_KEY="$API_KEY"
+const ENVRC_SNIPPET = `# managed by claude-tools
+_CC_KEY=$(security find-generic-password -s "Claude Code $(echo -n "$PWD" | base64)" -w 2>/dev/null)
+if [ -n "$_CC_KEY" ]; then
+  _CC_RESP=$(curl -s https://api.anthropic.com/v1/messages/count_tokens \\
+    -H "x-api-key: $_CC_KEY" -H "anthropic-version: 2023-06-01" \\
+    -H "content-type: application/json" \\
+    -d '{"model":"claude-haiku-4-5-20251001","messages":[{"role":"user","content":"a"}]}')
+  case "$_CC_RESP" in
+    *'"input_tokens"'*) export ANTHROPIC_API_KEY="$_CC_KEY" ;;
+    *"usage limits"*)   echo "direnv: API key quota exhausted - claude will fall back to the managed key" >&2 ;;
+    *)                  echo "direnv: API key invalid - claude will fall back to the managed key" >&2 ;;
+  esac
+  unset _CC_RESP _CC_KEY
 fi`;
 
 function requireMacOS(): void {
@@ -280,13 +289,75 @@ export function listKeychainEntries(currentDir?: string): KeychainListResult {
     };
 }
 
+/**
+ * Validate an API key using the token-counting endpoint (free, no output
+ * tokens consumed).  Returns a typed result indicating validity, quota
+ * exhaustion, or other error.
+ */
+export function validateKey(apiKey: string): Promise<KeyValidationResult> {
+    const body = JSON.stringify({
+        model: "claude-haiku-4-5-20251001",
+        messages: [{ role: "user", content: "a" }],
+    });
+
+    return new Promise((resolve) => {
+        const req = https.request(
+            {
+                hostname: "api.anthropic.com",
+                path: "/v1/messages/count_tokens",
+                method: "POST",
+                headers: {
+                    "x-api-key": apiKey,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                    "content-length": Buffer.byteLength(body),
+                },
+            },
+            (res) => {
+                let raw = "";
+                res.on("data", (chunk: Buffer) => {
+                    raw += chunk.toString();
+                });
+                res.on("end", () => {
+                    try {
+                        const data = JSON.parse(raw) as {
+                            input_tokens?: number;
+                            error?: { type: string; message: string };
+                        };
+                        if (data.input_tokens !== undefined) {
+                            resolve({ valid: true });
+                            return;
+                        }
+                        const msg = data.error?.message ?? "Unknown error";
+                        if (data.error?.type === "authentication_error") {
+                            resolve({ valid: false, error: "invalid_key", message: msg });
+                            return;
+                        }
+                        if (msg.includes("usage limits")) {
+                            const match = msg.match(/regain access on (.+?) at/);
+                            resolve({ valid: false, error: "quota_exhausted", message: msg, quotaResetsAt: match?.[1] });
+                            return;
+                        }
+                        resolve({ valid: false, error: "unknown", message: msg });
+                    } catch {
+                        resolve({ valid: false, error: "unknown", message: raw });
+                    }
+                });
+            }
+        );
+        req.on("error", (err: Error) => resolve({ valid: false, error: "network_error", message: err.message }));
+        req.write(body);
+        req.end();
+    });
+}
+
 /** Ensure .envrc in a directory contains the keychain lookup snippet. */
 export function ensureEnvrc(directory: string): { created: boolean; appended: boolean; alreadyPresent: boolean } {
     const envrc = path.join(directory, ".envrc");
 
     if (fs.existsSync(envrc)) {
         const content = fs.readFileSync(envrc, "utf-8");
-        if (content.includes("Claude Code $ENCODED_DIR")) {
+        if (content.includes("# managed by claude-tools") || content.includes("Claude Code $ENCODED_DIR")) {
             return { created: false, appended: false, alreadyPresent: true };
         }
         fs.appendFileSync(envrc, "\n" + ENVRC_SNIPPET + "\n");
@@ -361,7 +432,9 @@ export function removeEnvrcSnippet(directory: string): { removed: boolean; fileD
     if (!fs.existsSync(envrc)) return { removed: false, fileDeleted: false };
 
     let content = fs.readFileSync(envrc, "utf-8");
-    let cleaned = content.replace(/^ENCODED_DIR=\$\(echo -n "\$PWD" \| base64\)$.*?^fi$\n?/ms, "");
+    let cleaned = content
+        .replace(/^# managed by claude-tools$.*?^fi$\n?/ms, "")
+        .replace(/^ENCODED_DIR=\$\(echo -n "\$PWD" \| base64\)$.*?^fi$\n?/ms, "");
     cleaned = cleaned.replace(/\n{3,}/g, "\n\n").trim();
 
     if (!cleaned) {

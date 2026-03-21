@@ -34,6 +34,7 @@ export {
     getKeyLabel,
     listKeychainEntries,
     pruneOrphanedKeyNames,
+    validateKey,
     ensureEnvrc,
     removeEnvrcSnippet,
 } from "./set-key.js";

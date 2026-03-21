@@ -1,9 +1,19 @@
 import * as crypto from "node:crypto";
+import * as events from "node:events";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
+import * as https from "node:https";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { pruneOrphanedKeyNames, captureDefaultKey, getCapturedKey, listCapturedKeys } from "../set-key.js";
+import {
+    pruneOrphanedKeyNames,
+    captureDefaultKey,
+    getCapturedKey,
+    listCapturedKeys,
+    validateKey,
+    ensureEnvrc,
+    removeEnvrcSnippet,
+} from "../set-key.js";
 
 const tmpDir = path.join(process.cwd(), ".test-tmp-set-key");
 const configFile = path.join(tmpDir, ".claude", "key-config.json");
@@ -15,6 +25,10 @@ vi.mock("node:os", async (importOriginal) => {
 
 vi.mock("node:child_process", () => ({
     execFileSync: vi.fn(),
+}));
+
+vi.mock("node:https", () => ({
+    request: vi.fn(),
 }));
 
 const mockExec = execFileSync as ReturnType<typeof vi.fn>;
@@ -326,5 +340,158 @@ describe("getCapturedKey", () => {
     it("returns empty string for a missing slot", () => {
         mockExec.mockImplementation(makeCapturedKeychain({}));
         expect(getCapturedKey(99)).toBe("");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// validateKey
+// ---------------------------------------------------------------------------
+
+const mockRequest = https.request as ReturnType<typeof vi.fn>;
+
+function stubHttpsResponse(responseBody: object): void {
+    mockRequest.mockImplementation((_opts: unknown, callback: (res: events.EventEmitter) => void) => {
+        const res = new events.EventEmitter();
+        const req = new events.EventEmitter() as events.EventEmitter & { write: () => void; end: () => void };
+        req.write = () => {};
+        req.end = () => {
+            setImmediate(() => {
+                callback(res);
+                res.emit("data", Buffer.from(JSON.stringify(responseBody)));
+                res.emit("end");
+            });
+        };
+        return req;
+    });
+}
+
+describe("validateKey", () => {
+    it("returns valid: true when the API returns input_tokens", async () => {
+        stubHttpsResponse({ input_tokens: 5 });
+        const result = await validateKey("sk-ant-test-key");
+        expect(result.valid).toBe(true);
+    });
+
+    it("returns invalid_key for authentication_error", async () => {
+        stubHttpsResponse({ type: "error", error: { type: "authentication_error", message: "Invalid API key" } });
+        const result = await validateKey("sk-ant-bad-key");
+        expect(result.valid).toBe(false);
+        expect(result.error).toBe("invalid_key");
+        expect(result.message).toBe("Invalid API key");
+    });
+
+    it("returns quota_exhausted and extracts reset date", async () => {
+        stubHttpsResponse({
+            type: "error",
+            error: {
+                type: "invalid_request_error",
+                message: "You have reached your specified workspace API usage limits. You will regain access on 2026-04-01 at 00:00 UTC.",
+            },
+        });
+        const result = await validateKey("sk-ant-quota-key");
+        expect(result.valid).toBe(false);
+        expect(result.error).toBe("quota_exhausted");
+        expect(result.quotaResetsAt).toBe("2026-04-01");
+    });
+
+    it("returns unknown for unrecognised error type", async () => {
+        stubHttpsResponse({ type: "error", error: { type: "overloaded_error", message: "Server overloaded" } });
+        const result = await validateKey("sk-ant-some-key");
+        expect(result.valid).toBe(false);
+        expect(result.error).toBe("unknown");
+    });
+
+    it("returns network_error when the request emits an error", async () => {
+        mockRequest.mockImplementation((_opts: unknown, _cb: unknown) => {
+            const req = new events.EventEmitter() as events.EventEmitter & { write: () => void; end: () => void };
+            req.write = () => {};
+            req.end = () => {
+                setImmediate(() => req.emit("error", new Error("ECONNREFUSED")));
+            };
+            return req;
+        });
+        const result = await validateKey("sk-ant-broken-key");
+        expect(result.valid).toBe(false);
+        expect(result.error).toBe("network_error");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// ensureEnvrc / removeEnvrcSnippet
+// ---------------------------------------------------------------------------
+
+describe("ensureEnvrc", () => {
+    const envrcPath = path.join(tmpDir, ".envrc");
+
+    it("creates .envrc when absent", () => {
+        const result = ensureEnvrc(tmpDir);
+        expect(result.created).toBe(true);
+        expect(result.appended).toBe(false);
+        expect(result.alreadyPresent).toBe(false);
+        expect(fs.readFileSync(envrcPath, "utf-8")).toContain("managed by claude-tools");
+    });
+
+    it("reports alreadyPresent when new snippet is found", () => {
+        fs.writeFileSync(envrcPath, "# managed by claude-tools\nsome content\nfi\n");
+        const result = ensureEnvrc(tmpDir);
+        expect(result.alreadyPresent).toBe(true);
+    });
+
+    it("reports alreadyPresent for the old snippet format", () => {
+        fs.writeFileSync(
+            envrcPath,
+            'ENCODED_DIR=$(echo -n "$PWD" | base64)\nAPI_KEY=$(security find-generic-password -s "Claude Code $ENCODED_DIR" -w 2>/dev/null)\nif [ -n "$API_KEY" ]; then\n  export ANTHROPIC_API_KEY="$API_KEY"\nfi\n'
+        );
+        const result = ensureEnvrc(tmpDir);
+        expect(result.alreadyPresent).toBe(true);
+    });
+
+    it("appends to existing .envrc that lacks the snippet", () => {
+        fs.writeFileSync(envrcPath, "export FOO=bar\n");
+        const result = ensureEnvrc(tmpDir);
+        expect(result.appended).toBe(true);
+        const content = fs.readFileSync(envrcPath, "utf-8");
+        expect(content).toContain("export FOO=bar");
+        expect(content).toContain("managed by claude-tools");
+    });
+});
+
+describe("removeEnvrcSnippet", () => {
+    const envrcPath = path.join(tmpDir, ".envrc");
+
+    it("removes the new snippet and deletes file if it was the only content", () => {
+        fs.writeFileSync(envrcPath, '# managed by claude-tools\n_CC_KEY=$(security)\nif [ -n "$_CC_KEY" ]; then\n  unset _CC_RESP _CC_KEY\nfi\n');
+        const result = removeEnvrcSnippet(tmpDir);
+        expect(result.removed).toBe(true);
+        expect(result.fileDeleted).toBe(true);
+    });
+
+    it("removes new snippet while preserving surrounding content", () => {
+        fs.writeFileSync(
+            envrcPath,
+            'export FOO=bar\n# managed by claude-tools\n_CC_KEY=$(security)\nif [ -n "$_CC_KEY" ]; then\n  unset _CC_RESP _CC_KEY\nfi\nexport BAZ=qux\n'
+        );
+        const result = removeEnvrcSnippet(tmpDir);
+        expect(result.removed).toBe(true);
+        expect(result.fileDeleted).toBe(false);
+        const content = fs.readFileSync(envrcPath, "utf-8");
+        expect(content).toContain("FOO=bar");
+        expect(content).toContain("BAZ=qux");
+        expect(content).not.toContain("managed by claude-tools");
+    });
+
+    it("removes the old snippet format", () => {
+        fs.writeFileSync(
+            envrcPath,
+            'ENCODED_DIR=$(echo -n "$PWD" | base64)\nAPI_KEY=$(security find-generic-password -s "Claude Code $ENCODED_DIR" -w 2>/dev/null)\nif [ -n "$API_KEY" ]; then\n  export ANTHROPIC_API_KEY="$API_KEY"\nfi\n'
+        );
+        const result = removeEnvrcSnippet(tmpDir);
+        expect(result.removed).toBe(true);
+        expect(result.fileDeleted).toBe(true);
+    });
+
+    it("returns removed: false when file does not exist", () => {
+        const result = removeEnvrcSnippet(tmpDir);
+        expect(result.removed).toBe(false);
     });
 });

@@ -7,9 +7,11 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
-import type { KeychainEntry, KeychainListResult } from "./types.js";
+import type { CapturedKeyEntry, KeychainEntry, KeychainListResult } from "./types.js";
 
-const CONFIG_FILE = path.join(os.homedir(), ".claude", "key-config.json");
+function getConfigFile(): string {
+    return path.join(os.homedir(), ".claude", "key-config.json");
+}
 
 const ENVRC_SNIPPET = `ENCODED_DIR=$(echo -n "$PWD" | base64)
 API_KEY=$(security find-generic-password -s "Claude Code $ENCODED_DIR" -w 2>/dev/null)
@@ -27,14 +29,14 @@ function requireMacOS(): void {
 function ensureConfig(): void {
     const dir = path.join(os.homedir(), ".claude");
     fs.mkdirSync(dir, { recursive: true });
-    if (!fs.existsSync(CONFIG_FILE)) {
-        fs.writeFileSync(CONFIG_FILE, "{}");
+    if (!fs.existsSync(getConfigFile())) {
+        fs.writeFileSync(getConfigFile(), "{}");
     }
 }
 
 function configGet(configPath: string, defaultValue = ""): string {
     ensureConfig();
-    const d = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
+    const d = JSON.parse(fs.readFileSync(getConfigFile(), "utf-8"));
     const keys = configPath.split(".");
     let obj = d;
     for (const k of keys) {
@@ -46,7 +48,7 @@ function configGet(configPath: string, defaultValue = ""): string {
 
 function configSet(configPath: string, value: string): void {
     ensureConfig();
-    const d = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
+    const d = JSON.parse(fs.readFileSync(getConfigFile(), "utf-8"));
     const keys = configPath.split(".");
     let obj = d;
     for (const k of keys.slice(0, -1)) {
@@ -54,7 +56,7 @@ function configSet(configPath: string, value: string): void {
         obj = obj[k];
     }
     obj[keys[keys.length - 1]] = value;
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(d, null, 2));
+    fs.writeFileSync(getConfigFile(), JSON.stringify(d, null, 2));
 }
 
 function keyHash(apiKey: string): string {
@@ -169,6 +171,65 @@ export function copyDefaultKey(toDir: string): boolean {
     return storeKey(toDir, key);
 }
 
+// ---------------------------------------------------------------------------
+// Captured key management ("Claude Code Key N" persistent slots)
+// ---------------------------------------------------------------------------
+
+const CAPTURED_KEY_PREFIX = "Claude Code Key ";
+
+function capturedKeyServiceName(slot: number): string {
+    return `${CAPTURED_KEY_PREFIX}${slot}`;
+}
+
+/** Return the slot number (1-based) that already holds the given key, or null. */
+function findCapturedSlot(apiKey: string): number | null {
+    for (let n = 1; ; n++) {
+        const existing = securityFindPassword(capturedKeyServiceName(n));
+        if (!existing) return null;
+        if (existing === apiKey) return n;
+    }
+}
+
+/** Return the next unused slot number (slots are contiguous from 1). */
+function nextCapturedSlot(): number {
+    for (let n = 1; ; n++) {
+        if (!securityFindPassword(capturedKeyServiceName(n))) return n;
+    }
+}
+
+/**
+ * Capture the current default "Claude Code" key into the next available
+ * persistent slot ("Claude Code Key N") if it has not been captured yet.
+ * Returns the slot number used, or null if the key was already present.
+ */
+export function captureDefaultKey(): number | null {
+    requireMacOS();
+    const key = getDefaultKey();
+    if (!key) throw new Error("No default Claude Code key found in Keychain");
+    if (findCapturedSlot(key) !== null) return null;
+    const slot = nextCapturedSlot();
+    securityAddPassword(capturedKeyServiceName(slot), key);
+    return slot;
+}
+
+/** Return the key stored in the given captured slot, or empty string if absent. */
+export function getCapturedKey(slot: number): string {
+    requireMacOS();
+    return securityFindPassword(capturedKeyServiceName(slot));
+}
+
+/** List all captured "Claude Code Key N" entries in slot order. */
+export function listCapturedKeys(): CapturedKeyEntry[] {
+    requireMacOS();
+    const results: CapturedKeyEntry[] = [];
+    for (let n = 1; ; n++) {
+        const key = securityFindPassword(capturedKeyServiceName(n));
+        if (!key) break;
+        results.push({ slot: n, label: getKeyLabel(key) });
+    }
+    return results;
+}
+
 /** List all Claude Code keychain entries for other directories. */
 export function listKeychainEntries(currentDir?: string): KeychainListResult {
     requireMacOS();
@@ -234,6 +295,64 @@ export function ensureEnvrc(directory: string): { created: boolean; appended: bo
 
     fs.writeFileSync(envrc, ENVRC_SNIPPET + "\n");
     return { created: true, appended: false, alreadyPresent: false };
+}
+
+/**
+ * Remove key name entries from key-config.json that no longer have a
+ * corresponding key in the macOS Keychain.  Returns the number of entries
+ * pruned.
+ */
+export function pruneOrphanedKeyNames(): number {
+    requireMacOS();
+    ensureConfig();
+
+    const activeHashes = new Set<string>();
+
+    const defaultKey = getDefaultKey();
+    if (defaultKey) activeHashes.add(keyHash(defaultKey));
+
+    let dumpOutput = "";
+    try {
+        dumpOutput = execFileSync("security", ["dump-keychain"], {
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        });
+    } catch {
+        dumpOutput = "";
+    }
+
+    const re = /"svce".*="Claude Code (.+)"/;
+    for (const line of dumpOutput.split("\n")) {
+        const m = re.exec(line);
+        if (!m) continue;
+        const key = securityFindPassword(`Claude Code ${m[1]}`);
+        if (key) activeHashes.add(keyHash(key));
+    }
+
+    // Explicitly walk captured slots in case dump-keychain output is incomplete
+    for (let n = 1; ; n++) {
+        const key = securityFindPassword(capturedKeyServiceName(n));
+        if (!key) break;
+        activeHashes.add(keyHash(key));
+    }
+
+    const d = JSON.parse(fs.readFileSync(getConfigFile(), "utf-8"));
+    const keyNames = d.key_names as Record<string, string> | undefined;
+    if (!keyNames) return 0;
+
+    let pruned = 0;
+    for (const hash of Object.keys(keyNames)) {
+        if (!activeHashes.has(hash)) {
+            delete keyNames[hash];
+            pruned++;
+        }
+    }
+
+    if (pruned > 0) {
+        fs.writeFileSync(getConfigFile(), JSON.stringify(d, null, 2));
+    }
+
+    return pruned;
 }
 
 /** Remove the keychain lookup snippet from .envrc. */

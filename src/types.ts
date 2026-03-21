@@ -163,6 +163,14 @@ export interface KeychainEntry {
     exists: boolean;
 }
 
+/** A captured "Claude Code Key N" keychain entry */
+export interface CapturedKeyEntry {
+    /** 1-based slot number */
+    slot: number;
+    /** Display label (user-defined name, or truncated key) */
+    label: string;
+}
+
 /** Result of listing keychain entries */
 export interface KeychainListResult {
     /** Key for the current directory (if any) */

@@ -12,13 +12,28 @@ import {
     storeKey,
     deleteKey,
     getDefaultKey,
-    getKeyLabel,
     getKeyName,
     saveKeyName,
     listKeychainEntries,
+    listCapturedKeys,
+    getCapturedKey,
     ensureEnvrc,
     removeEnvrcSnippet,
 } from "../set-key.js";
+
+/** Label for the "Claude Code" default entry, cross-referencing captured slots. */
+function getDefaultKeyLabel(): string {
+    const key = getDefaultKey();
+    if (!key) return "default";
+    for (const entry of listCapturedKeys()) {
+        if (getCapturedKey(entry.slot) === key) {
+            const name = getKeyName(key);
+            if (name) return `default (= Key ${entry.slot}: "${name}")`;
+            return `default (= Key ${entry.slot})`;
+        }
+    }
+    return "default";
+}
 
 type AskFn = (q: string) => Promise<string>;
 
@@ -41,11 +56,8 @@ async function handleSet(ask: AskFn, directory: string, entries: ReturnType<type
 
     if (entries.hasDefaultKey) {
         sources.push({
-            label: `Copy default Claude Code key`,
-            action: () => {
-                const key = getDefaultKey();
-                return key;
-            },
+            label: `Copy ${getDefaultKeyLabel()}`,
+            action: () => getDefaultKey(),
         });
     }
 
@@ -185,20 +197,19 @@ async function handleRename(ask: AskFn, directory: string, entries: ReturnType<t
         });
     }
 
-    if (entries.hasDefaultKey) {
-        const defaultKey = getDefaultKey();
-        const label = getKeyLabel(defaultKey);
-        targets.push({
-            label: `Default Claude Code key (${label})`,
-            getKey: () => defaultKey,
-        });
-    }
-
     for (const other of entries.otherKeys) {
         const marker = other.exists ? "" : " *";
         targets.push({
             label: `${other.dirPath}${marker} (${other.label})`,
             getKey: () => getKey(other.dirPath),
+        });
+    }
+
+    for (const entry of listCapturedKeys()) {
+        const slot = entry.slot;
+        targets.push({
+            label: `Key ${slot} (${entry.label})`,
+            getKey: () => getCapturedKey(slot),
         });
     }
 
@@ -265,7 +276,7 @@ async function main(): Promise<void> {
     if (hasOthers || hasCurrentKey) {
         options.push({ id: "delete", label: "Delete a key" });
     }
-    if (hasOthers || hasCurrentKey || entries.hasDefaultKey) {
+    if (hasOthers || hasCurrentKey || listCapturedKeys().length > 0) {
         options.push({ id: "rename", label: "Name a key" });
     }
 

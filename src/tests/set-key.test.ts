@@ -13,9 +13,12 @@ import {
     validateKey,
     ensureEnvrc,
     removeEnvrcSnippet,
+    getKeyMeta,
+    storeKeyMeta,
+    deleteKeyMeta,
 } from "../set-key.js";
 
-const tmpDir = path.join(process.cwd(), ".test-tmp-set-key");
+const tmpDir = vi.hoisted(() => process.cwd() + "/.test-tmp-set-key");
 const configFile = path.join(tmpDir, ".claude", "key-config.json");
 
 vi.mock("node:os", async (importOriginal) => {
@@ -432,9 +435,37 @@ describe("ensureEnvrc", () => {
     });
 
     it("reports alreadyPresent when current snippet is found", () => {
-        fs.writeFileSync(envrcPath, "# managed by claude-tools\nsome content\n\\033[33m\nfi\n");
+        fs.writeFileSync(envrcPath, "# managed by claude-tools\nsome content\n_cc_fmt_cents\nfi\n");
         const result = ensureEnvrc(tmpDir);
         expect(result.alreadyPresent).toBe(true);
+    });
+
+    it("upgrades previous format (spend display, no parallel) to current version", () => {
+        fs.writeFileSync(envrcPath, "# managed by claude-tools\n_CC_SPEND\nfi\n");
+        const result = ensureEnvrc(tmpDir);
+        expect(result.upgraded).toBe(true);
+        const content = fs.readFileSync(envrcPath, "utf-8");
+        expect(content).toContain("_cc_fmt_cents");
+    });
+
+    it("upgrades previous format (name resolution, no spend) to current version", () => {
+        fs.writeFileSync(envrcPath, "# managed by claude-tools\n_cc_resolve_name\nfi\n");
+        const result = ensureEnvrc(tmpDir);
+        expect(result.upgraded).toBe(true);
+        const content = fs.readFileSync(envrcPath, "utf-8");
+        expect(content).toContain("_cc_fmt_cents");
+    });
+
+    it("upgrades previous format (yellow warnings, no name resolution) to current version", () => {
+        fs.writeFileSync(
+            envrcPath,
+            '# managed by claude-tools\n_CC_KEY=$(security)\nif [ -n "$_CC_KEY" ]; then\n  export ANTHROPIC_API_KEY="$_CC_KEY"\n  printf \'\\033[33mdirenv: warning\\033[0m\\n\' >&2\nfi\n'
+        );
+        const result = ensureEnvrc(tmpDir);
+        expect(result.upgraded).toBe(true);
+        expect(result.alreadyPresent).toBe(false);
+        const content = fs.readFileSync(envrcPath, "utf-8");
+        expect(content).toContain("_cc_fmt_cents");
     });
 
     it("upgrades intermediate managed format (no yellow warnings) to current version", () => {
@@ -446,7 +477,7 @@ describe("ensureEnvrc", () => {
         expect(result.upgraded).toBe(true);
         expect(result.alreadyPresent).toBe(false);
         const content = fs.readFileSync(envrcPath, "utf-8");
-        expect(content).toContain("\\033[33m");
+        expect(content).toContain("_cc_fmt_cents");
     });
 
     it("upgrades old snippet format to current version", () => {
@@ -520,5 +551,62 @@ describe("removeEnvrcSnippet", () => {
     it("returns removed: false when file does not exist", () => {
         const result = removeEnvrcSnippet(tmpDir);
         expect(result.removed).toBe(false);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// getKeyMeta / storeKeyMeta / deleteKeyMeta
+// ---------------------------------------------------------------------------
+
+describe("key metadata", () => {
+    const testDir = tmpDir + "/meta-test";
+
+    beforeEach(() => {
+        fs.mkdirSync(testDir, { recursive: true });
+    });
+
+    it("returns null when no metadata is stored", () => {
+        mockExec.mockImplementation((_cmd: string, args: string[]) => {
+            if (args[0] === "find-generic-password") return "";
+            throw new Error("unexpected");
+        });
+        expect(getKeyMeta(testDir)).toBeNull();
+    });
+
+    it("stores and retrieves key metadata", () => {
+        const keyId = "apikey_01XXXX";
+        const workspaceId = "wrkspc_01YYYY";
+        mockExec.mockImplementation((_cmd: string, args: string[]) => {
+            if (args[0] === "delete-generic-password") return "";
+            if (args[0] === "add-generic-password") return "";
+            if (args[0] === "find-generic-password") return `${keyId}:${workspaceId}\n`;
+            throw new Error("unexpected");
+        });
+        expect(storeKeyMeta(testDir, keyId, workspaceId)).toBe(true);
+        const meta = getKeyMeta(testDir);
+        expect(meta).not.toBeNull();
+        expect(meta!.keyId).toBe(keyId);
+        expect(meta!.workspaceId).toBe(workspaceId);
+    });
+
+    it("returns null when stored value has no colon separator", () => {
+        mockExec.mockImplementation((_cmd: string, args: string[]) => {
+            if (args[0] === "find-generic-password") return "nocolon\n";
+            throw new Error("unexpected");
+        });
+        expect(getKeyMeta(testDir)).toBeNull();
+    });
+
+    it("deleteKeyMeta removes the metadata entry", () => {
+        const deleted: string[] = [];
+        mockExec.mockImplementation((_cmd: string, args: string[]) => {
+            if (args[0] === "delete-generic-password") {
+                deleted.push(args[args.indexOf("-s") + 1]);
+                return "";
+            }
+            throw new Error("unexpected");
+        });
+        deleteKeyMeta(testDir);
+        expect(deleted.some((s) => s.includes(":meta"))).toBe(true);
     });
 });

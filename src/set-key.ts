@@ -9,15 +9,26 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import type { CapturedKeyEntry, KeychainEntry, KeychainListResult, KeyValidationResult } from "./types.js";
-
-function getConfigFile(): string {
-    return path.join(os.homedir(), ".claude", "key-config.json");
-}
+import { getConfigFile, ensureConfig, configGet, configSet } from "./utils.js";
 
 const ENVRC_SNIPPET = `# managed by claude-tools
 _CC_KEY=$(security find-generic-password -s "Claude Code $(echo -n "$PWD" | base64)" -w 2>/dev/null)
 if [ -n "$_CC_KEY" ]; then
-  export ANTHROPIC_API_KEY="$_CC_KEY"
+  _cc_resolve_name() {
+    local _h _n
+    _h=$(echo -n "$1" | shasum -a 256 | cut -c1-16)
+    _n=$(grep -o "\\"\${_h}\\"[[:space:]]*:[[:space:]]*\\"[^\\"]*\\"" ~/.claude/key-config.json 2>/dev/null | sed 's/.*:[[:space:]]*"//' | sed 's/"$//')
+    if [ -n "$_n" ]; then echo "$_n"; else echo "\${1:0:12}...\${1: -4}"; fi
+  }
+  if [ -n "$ANTHROPIC_API_KEY" ] && [ "$ANTHROPIC_API_KEY" = "$_CC_KEY" ]; then
+    printf '\\033[36mdirenv: using API key: %s\\033[0m\\n' "$(_cc_resolve_name "$_CC_KEY")" >&2
+  elif [ -n "$ANTHROPIC_API_KEY" ]; then
+    printf '\\033[33mdirenv: overriding API key: %s -> %s\\033[0m\\n' "$(_cc_resolve_name "$ANTHROPIC_API_KEY")" "$(_cc_resolve_name "$_CC_KEY")" >&2
+    export ANTHROPIC_API_KEY="$_CC_KEY"
+  else
+    export ANTHROPIC_API_KEY="$_CC_KEY"
+    printf '\\033[36mdirenv: using API key: %s\\033[0m\\n' "$(_cc_resolve_name "$_CC_KEY")" >&2
+  fi
   _CC_RESP=$(curl -s https://api.anthropic.com/v1/messages/count_tokens \\
     -H "x-api-key: $_CC_KEY" -H "anthropic-version: 2023-06-01" \\
     -H "content-type: application/json" \\
@@ -27,46 +38,57 @@ if [ -n "$_CC_KEY" ]; then
     *"usage limits"*)   printf '\\033[33mdirenv: warning: API key quota exhausted\\033[0m\\n' >&2 ;;
     *)                  printf '\\033[33mdirenv: warning: API key is invalid\\033[0m\\n' >&2 ;;
   esac
+  if [ -n "$ANTHROPIC_ADMIN_SESSION_KEY" ] && [ -n "$ANTHROPIC_ORG_ID" ]; then
+    _CC_META=$(security find-generic-password -s "Claude Code $(echo -n "$PWD" | base64):meta" -w 2>/dev/null)
+    case "$_CC_META" in
+      *:*) _CC_KEY_ID="\${_CC_META%%:*}" _CC_WS_ID="\${_CC_META##*:}" ;;
+      *)   _CC_KEY_ID="" _CC_WS_ID="" ;;
+    esac
+    _CC_TMP1=$(mktemp) _CC_TMP2=$(mktemp) _CC_TMP3=$(mktemp)
+    curl -s "https://platform.claude.com/api/organizations/$ANTHROPIC_ORG_ID/current_spend" \\
+      -H "Cookie: sessionKey=$ANTHROPIC_ADMIN_SESSION_KEY" \\
+      -H "Content-Type: application/json" \\
+      -H "anthropic-client-platform: web_console" > "$_CC_TMP1" 2>/dev/null &
+    if [ -n "$_CC_WS_ID" ]; then
+      curl -s "https://platform.claude.com/api/organizations/$ANTHROPIC_ORG_ID/workspaces/$_CC_WS_ID/current_spend" \\
+        -H "Cookie: sessionKey=$ANTHROPIC_ADMIN_SESSION_KEY" \\
+        -H "Content-Type: application/json" \\
+        -H "anthropic-client-platform: web_console" > "$_CC_TMP2" 2>/dev/null &
+    fi
+    if [ -n "$_CC_KEY_ID" ]; then
+      _CC_MONTH=$(date +%Y-%m-01)
+      _CC_NXMON=$(date -v+1m +%Y-%m-01)
+      curl -s "https://platform.claude.com/api/organizations/$ANTHROPIC_ORG_ID/usage_cost?starting_on=$_CC_MONTH&ending_before=$_CC_NXMON&group_by=api_key_id" \\
+        -H "Cookie: sessionKey=$ANTHROPIC_ADMIN_SESSION_KEY" \\
+        -H "Content-Type: application/json" \\
+        -H "anthropic-client-platform: web_console" > "$_CC_TMP3" 2>/dev/null &
+    fi
+    wait
+    _cc_fmt_cents() {
+      if [ -n "$1" ] && [ "$1" -gt 0 ] 2>/dev/null; then printf '$%s.%02d' "$(($1/100))" "$(($1%100))"; else printf 'unavailable'; fi
+    }
+    _CC_ORG_AMT=$(grep -o '"amount":[0-9]*' "$_CC_TMP1" 2>/dev/null | grep -o '[0-9]*')
+    [ -n "$_CC_WS_ID" ] && _CC_WS_AMT=$(grep -o '"amount":[0-9]*' "$_CC_TMP2" 2>/dev/null | grep -o '[0-9]*')
+    if [ -n "$_CC_KEY_ID" ] && [ -s "$_CC_TMP3" ]; then
+      _CC_KEY_AMT=$(KEY_ID="$_CC_KEY_ID" python3 -c "import os,json,sys; d=json.load(open(sys.argv[1])); t=sum(e['total'] for day in d['costs'].values() for e in day if e['key_id']==os.environ['KEY_ID']); print(round(t))" "$_CC_TMP3" 2>/dev/null)
+    fi
+    rm -f "$_CC_TMP1" "$_CC_TMP2" "$_CC_TMP3"
+    _CC_WS_STR="n/a" _CC_KEY_STR="n/a"
+    [ -n "$_CC_WS_ID" ] && _CC_WS_STR=$(_cc_fmt_cents "$_CC_WS_AMT")
+    [ -n "$_CC_KEY_ID" ] && _CC_KEY_STR=$(_cc_fmt_cents "$_CC_KEY_AMT")
+    printf '\\033[36mdirenv: spend - account: %s | workspace: %s | key: %s\\033[0m\\n' "$(_cc_fmt_cents "$_CC_ORG_AMT")" "$_CC_WS_STR" "$_CC_KEY_STR" >&2
+    unset -f _cc_fmt_cents 2>/dev/null
+    unset _CC_META _CC_KEY_ID _CC_WS_ID _CC_TMP1 _CC_TMP2 _CC_TMP3 _CC_MONTH _CC_NXMON
+    unset _CC_ORG_AMT _CC_WS_AMT _CC_KEY_AMT _CC_WS_STR _CC_KEY_STR
+  fi
   unset _CC_RESP _CC_KEY
+  unset -f _cc_resolve_name 2>/dev/null
 fi`;
 
 function requireMacOS(): void {
     if (process.platform !== "darwin") {
         throw new Error("Keychain operations are only supported on macOS");
     }
-}
-
-function ensureConfig(): void {
-    const dir = path.join(os.homedir(), ".claude");
-    fs.mkdirSync(dir, { recursive: true });
-    if (!fs.existsSync(getConfigFile())) {
-        fs.writeFileSync(getConfigFile(), "{}");
-    }
-}
-
-function configGet(configPath: string, defaultValue = ""): string {
-    ensureConfig();
-    const d = JSON.parse(fs.readFileSync(getConfigFile(), "utf-8"));
-    const keys = configPath.split(".");
-    let obj = d;
-    for (const k of keys) {
-        if (obj == null || typeof obj !== "object") return defaultValue;
-        obj = obj[k];
-    }
-    return obj != null ? String(obj) : defaultValue;
-}
-
-function configSet(configPath: string, value: string): void {
-    ensureConfig();
-    const d = JSON.parse(fs.readFileSync(getConfigFile(), "utf-8"));
-    const keys = configPath.split(".");
-    let obj = d;
-    for (const k of keys.slice(0, -1)) {
-        if (obj[k] == null || typeof obj[k] !== "object") obj[k] = {};
-        obj = obj[k];
-    }
-    obj[keys[keys.length - 1]] = value;
-    fs.writeFileSync(getConfigFile(), JSON.stringify(d, null, 2));
 }
 
 function keyHash(apiKey: string): string {
@@ -157,6 +179,33 @@ export function storeKey(directory: string, apiKey: string): boolean {
 export function deleteKey(directory: string): boolean {
     requireMacOS();
     return securityDeletePassword(keychainName(directory));
+}
+
+function metaKeychainName(directory: string): string {
+    return `${keychainName(directory)}:meta`;
+}
+
+/** Get stored key metadata (key_id and workspace_id) for a directory. */
+export function getKeyMeta(directory: string): { keyId: string; workspaceId: string } | null {
+    requireMacOS();
+    const raw = securityFindPassword(metaKeychainName(directory));
+    if (!raw) return null;
+    const idx = raw.indexOf(":");
+    if (idx < 0) return null;
+    return { keyId: raw.slice(0, idx), workspaceId: raw.slice(idx + 1) };
+}
+
+/** Store key metadata (key_id and workspace_id) for a directory. */
+export function storeKeyMeta(directory: string, keyId: string, workspaceId: string): boolean {
+    requireMacOS();
+    securityDeletePassword(metaKeychainName(directory));
+    return securityAddPassword(metaKeychainName(directory), `${keyId}:${workspaceId}`);
+}
+
+/** Delete key metadata for a directory from the macOS Keychain. */
+export function deleteKeyMeta(directory: string): boolean {
+    requireMacOS();
+    return securityDeletePassword(metaKeychainName(directory));
 }
 
 /** Copy the API key from one directory to another. */
@@ -359,12 +408,12 @@ export function ensureEnvrc(directory: string): { created: boolean; appended: bo
     if (fs.existsSync(envrc)) {
         const content = fs.readFileSync(envrc, "utf-8");
 
-        // Current format: always exports key and uses printf for yellow warnings
-        if (content.includes("# managed by claude-tools") && content.includes("\\033[33m")) {
+        // Current format: parallel spend display with account/workspace/key breakdown
+        if (content.includes("# managed by claude-tools") && content.includes("_cc_fmt_cents")) {
             return { created: false, appended: false, alreadyPresent: true, upgraded: false };
         }
 
-        // Older managed format (conditional export, no yellow warnings) or oldest format
+        // Any older managed format
         if (content.includes("# managed by claude-tools") || content.includes("Claude Code $ENCODED_DIR")) {
             removeEnvrcSnippet(directory);
             if (fs.existsSync(envrc)) {

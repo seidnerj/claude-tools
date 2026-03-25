@@ -14,6 +14,47 @@ export const HISTORY_FILE = path.join(CLAUDE_DIR, "history.jsonl");
 export const DEFAULT_MODEL = "claude-haiku-4-5-20251001";
 
 // ---------------------------------------------------------------------------
+// Configuration (key-config.json)
+// ---------------------------------------------------------------------------
+
+export function getConfigFile(): string {
+    return path.join(os.homedir(), ".claude", "key-config.json");
+}
+
+export function ensureConfig(): void {
+    const dir = path.join(os.homedir(), ".claude");
+    fs.mkdirSync(dir, { recursive: true });
+    if (!fs.existsSync(getConfigFile())) {
+        fs.writeFileSync(getConfigFile(), "{}");
+    }
+}
+
+export function configGet(configPath: string, defaultValue = ""): string {
+    ensureConfig();
+    const d = JSON.parse(fs.readFileSync(getConfigFile(), "utf-8"));
+    const keys = configPath.split(".");
+    let obj = d;
+    for (const k of keys) {
+        if (obj == null || typeof obj !== "object") return defaultValue;
+        obj = obj[k];
+    }
+    return obj != null ? String(obj) : defaultValue;
+}
+
+export function configSet(configPath: string, value: string): void {
+    ensureConfig();
+    const d = JSON.parse(fs.readFileSync(getConfigFile(), "utf-8"));
+    const keys = configPath.split(".");
+    let obj = d;
+    for (const k of keys.slice(0, -1)) {
+        if (obj[k] == null || typeof obj[k] !== "object") obj[k] = {};
+        obj = obj[k];
+    }
+    obj[keys[keys.length - 1]] = value;
+    fs.writeFileSync(getConfigFile(), JSON.stringify(d, null, 2));
+}
+
+// ---------------------------------------------------------------------------
 // Path encoding/decoding
 // ---------------------------------------------------------------------------
 

@@ -63,7 +63,7 @@ npm install -g claude-tools
 
 ### LLM Safety Hook Setup
 
-The safety hook is a `PreToolUse` hook for Claude Code that sends Bash commands to Claude (with extended thinking) for safety evaluation.
+The safety hook is a `PreToolUse` hook for Claude Code that evaluates tool actions for safety before execution. It covers Bash commands, file edits/writes, network requests, sub-agent spawning, and MCP tool calls.
 
 ```bash
 sudo ln -sf "$(pwd)/src/bin/llm-safety-check.ts" /usr/local/bin/llm-safety-check
@@ -76,7 +76,7 @@ Add to `~/.claude/settings.json`:
     "hooks": {
         "PreToolUse": [
             {
-                "matcher": "Bash",
+                "matcher": "Bash|Edit|Write|WebFetch|WebSearch|Agent|NotebookEdit|mcp__.*",
                 "hooks": [
                     {
                         "type": "command",
@@ -91,6 +91,71 @@ Add to `~/.claude/settings.json`:
 ```
 
 Requires `ANTHROPIC_API_KEY` env var or a key stored in macOS Keychain under "Claude Code".
+
+**Configuration** (optional, in `~/.claude/key-config.json`):
+
+```json
+{
+    "safety": {
+        "model": "claude-sonnet-4-6",
+        "context_level": "user-only"
+    }
+}
+```
+
+- `model` - classifier model (default: `claude-sonnet-4-6`, matching Auto Mode)
+- `context_level` - transcript context sent to classifier:
+    - `"none"` - no transcript access (maximum isolation)
+    - `"user-only"` (default) - user messages + tool call names (no assistant text or tool results)
+    - `"full"` - all message types except raw tool results
+
+### LLM Safety Hook vs. Claude Code Auto Mode
+
+Claude Code's [Auto Mode](https://docs.anthropic.com/en/docs/claude-code/security#auto-mode) (March 2025) provides built-in automated permission handling with its own safety classifier. The table below compares it with this project's LLM safety hook.
+
+#### Architecture
+
+|                                    | LLM Safety Hook                                                                                                                   | Auto Mode                                                                                                           |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| **How it works**                   | `PreToolUse` hook that sends each tool action to a separate LLM call (Sonnet 4.6 default) with a dedicated security system prompt | Built-in classifier (Sonnet 4.6) that evaluates tool calls against the user's original request and task context     |
+| **Scope**                          | All tool types: Bash, Edit, Write, WebFetch, WebSearch, Agent, MCP tools                                                          | All tool types (Bash, file edits, MCP tools, etc.)                                                                  |
+| **Context provided to classifier** | Tool input + CLAUDE.md + configurable transcript context (none/user-only/full). Two-pass file inspection for Bash.                | User messages and tool calls, with Claude's own text and tool results stripped out. Also receives CLAUDE.md content |
+| **Decisions**                      | Approve, deny (hard block), or prompt (fall back to user). Graceful degradation after 3 consecutive or 20 total blocks.           | Auto-approve, block (Claude retries with alternative approach), or escalate to user after repeated blocks           |
+| **Customization**                  | Configurable model, context level, editable system prompt with BLOCK/ALLOW categories                                             | Configurable allow/deny rules and `autoMode.environment` trusted infrastructure settings                            |
+
+#### Availability
+
+|                        | LLM Safety Hook                                  | Auto Mode                                                                                                            |
+| ---------------------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| **Plan requirements**  | Any - works with any Anthropic API key           | Team plan required (Enterprise and API access rolling out)                                                           |
+| **Model requirements** | Any model with API access (defaults to Opus 4.6) | Sonnet 4.6 or Opus 4.6 only; not available on Haiku, Claude 3.x, or third-party providers (Bedrock, Vertex, Foundry) |
+| **Setup**              | Manual hook configuration in `settings.json`     | `claude --permission-mode auto` or `--enable-auto-mode` flag                                                         |
+
+#### Pros and Cons
+
+**LLM Safety Hook**
+
+- Works with API keys on any plan
+- Configurable context isolation (none/user-only/full) - at "none" level, classifier has zero visibility into the conversation
+- Hard deny capability - blocked commands cannot be retried or worked around
+- Two-pass file inspection - classifier can request file contents before deciding (unique to this hook)
+- Fully customizable system prompt, model, and evaluation logic
+- Fast-path for known-safe commands and local file edits (no API call)
+- Graceful degradation (3 consecutive or 20 total blocks -> falls back to user prompt)
+- Adds latency and API cost to non-fast-pathed tool calls
+
+**Auto Mode**
+
+- Built-in with no extra configuration beyond a flag
+- Has richer task context - sees the full conversation transcript (minus tool results)
+- Falls back gracefully (pauses auto mode after repeated blocks)
+- Requires Team/Enterprise plan - not available with standalone API keys
+- Classifier sees partial conversation context, which could be influenced by prompt injection
+- No two-pass file inspection capability
+
+#### Using Both Together
+
+`PreToolUse` hooks fire regardless of the permission mode, so both can run simultaneously. When combined, the safety hook acts as a defense-in-depth layer - Auto Mode handles broad permission management, while the hook provides an independent safety check with its own classifier, BLOCK/ALLOW rules, and two-pass file inspection.
 
 ## Library API
 

@@ -37,8 +37,22 @@ export {
     validateKey,
     ensureEnvrc,
     removeEnvrcSnippet,
+    getKeyMeta,
+    storeKeyMeta,
+    deleteKeyMeta,
 } from "./set-key.js";
-export { checkCommandSafety, processHookInput } from "./llm-safety-check.js";
+export {
+    checkCommandSafety,
+    checkToolSafety,
+    processHookInput,
+    isFastApprove,
+    extractTaskContext,
+    getBlockState,
+    incrementBlockCount,
+    resetConsecutiveBlocks,
+    shouldDegradeToPrompt,
+} from "./llm-safety-check.js";
+export { getClaudeStatus, parseStatusRss, parseStatusSummary } from "./claude-status.js";
 export {
     readClaudeConfig,
     writeClaudeConfig,
@@ -63,6 +77,10 @@ export {
     listSessions,
     listProjectDirs,
     preserveMtime,
+    configGet,
+    configSet,
+    ensureConfig,
+    getConfigFile,
     CLAUDE_DIR,
     PROJECTS_DIR,
     HISTORY_FILE,

@@ -5,11 +5,11 @@
 // Requires: npm install -g tsx
 //
 // Usage: symlink this file and configure in ~/.claude/settings.json:
-//   ln -s /path/to/claude-tools/ts/src/bin/llm-safety-check.ts ~/.claude/hooks/llm-safety-check.ts
+//   ln -s /path/to/claude-tools/src/bin/llm-safety-check.ts ~/.claude/hooks/llm-safety-check.ts
 //
 //   "hooks": {
 //     "PreToolUse": [{
-//       "matcher": "Bash",
+//       "matcher": "Bash|Edit|Write|WebFetch|WebSearch|Agent|NotebookEdit|mcp__.*",
 //       "hooks": [{ "type": "command", "command": "tsx ~/.claude/hooks/llm-safety-check.ts", "timeout": 35 }]
 //     }]
 //   }
@@ -40,11 +40,13 @@ async function main(): Promise<void> {
     }
 
     if (result.decision === "allow") {
-        const output = {
+        const output: Record<string, unknown> = {
             hookSpecificOutput: {
                 hookEventName: "PreToolUse",
                 permissionDecision: "allow",
                 permissionDecisionReason: result.reason,
+                ...(result.additionalContext && { additionalContext: result.additionalContext }),
+                ...(result.updatedInput && { updatedInput: result.updatedInput }),
             },
         };
         process.stdout.write(JSON.stringify(output) + "\n");

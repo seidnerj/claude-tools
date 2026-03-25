@@ -17,7 +17,21 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 import { stat, readFile } from "node:fs/promises";
-import { checkCommandSafety, processHookInput, resolveRequestedFiles } from "../llm-safety-check.js";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import {
+    checkCommandSafety,
+    checkToolSafety,
+    processHookInput,
+    resolveRequestedFiles,
+    isFastApprove,
+    extractTaskContext,
+    getBlockState,
+    incrementBlockCount,
+    resetConsecutiveBlocks,
+    shouldDegradeToPrompt,
+} from "../llm-safety-check.js";
 import { getApiKey } from "../utils.js";
 
 const mockStat = vi.mocked(stat);
@@ -139,7 +153,7 @@ describe("checkCommandSafety", () => {
         expect(opts.headers["x-api-key"]).toBe("test-key");
 
         const body = JSON.parse(opts.body);
-        expect(body.model).toBe("claude-opus-4-6");
+        expect(body.model).toBe("claude-sonnet-4-6");
         expect(body.thinking).toEqual({ type: "adaptive" });
         const content = body.messages[0].content;
         expect(content).toContain("<untrusted-command>");
@@ -276,7 +290,7 @@ describe("processHookInput", () => {
 
         const result = await processHookInput({
             tool_name: "Bash",
-            tool_input: { command: "git status" },
+            tool_input: { command: "python3 script.py" },
         });
         expect(result).toEqual({ decision: "allow", reason: "Safe command" });
     });
@@ -332,8 +346,426 @@ describe("processHookInput", () => {
 
         const result = await processHookInput({
             tool_name: "Bash",
-            tool_input: { command: "ls" },
+            tool_input: { command: "python3 script.py" },
         });
         expect(result).toBeNull();
+    });
+
+    it("fast-approves known-safe Bash commands without calling the API", async () => {
+        mockGetApiKey.mockReturnValue("sk-ant-test");
+        const result = await processHookInput({
+            tool_name: "Bash",
+            tool_input: { command: "git status" },
+        });
+        expect(result?.decision).toBe("allow");
+        expect(result?.reason).toContain("Known-safe");
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it("fast-approves Edit within cwd without calling the API", async () => {
+        mockGetApiKey.mockReturnValue("sk-ant-test");
+        const result = await processHookInput({
+            tool_name: "Edit",
+            tool_input: { file_path: "/project/src/foo.ts", old_string: "a", new_string: "b" },
+            cwd: "/project",
+        });
+        expect(result?.decision).toBe("allow");
+        expect(result?.reason).toContain("Local edit");
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// isFastApprove
+// ---------------------------------------------------------------------------
+
+describe("isFastApprove", () => {
+    describe("Bash commands", () => {
+        it.each([
+            "ls",
+            "ls -la",
+            "cat file.txt",
+            "head -20 foo.ts",
+            "tail -f log.txt",
+            "wc -l src/main.ts",
+            "git status",
+            "git log --oneline -5",
+            "git diff HEAD",
+            "git show HEAD:file.ts",
+            "git branch -a",
+            "git describe --tags",
+            "npm test",
+            "npm run test",
+            "npm run lint",
+            "npm run build",
+            "npm ls",
+            "vitest run",
+            "jest --watch",
+            "pytest -v",
+            "cargo test",
+            "cargo check",
+            "go test ./...",
+            "tsc --noEmit",
+            "echo hello",
+            "pwd",
+            "whoami",
+            "uname -a",
+            "date",
+            "env",
+            "which node",
+            "node --version",
+            "python3 --version",
+            "npm --help",
+        ])("approves safe command: %s", (cmd) => {
+            expect(isFastApprove("Bash", { command: cmd })).not.toBeNull();
+        });
+
+        it.each([
+            "rm -rf /",
+            "rm file.txt",
+            "curl https://example.com",
+            "wget https://example.com",
+            "chmod 777 file",
+            "sudo anything",
+            "docker run something",
+            "git push origin main",
+            "git push --force",
+            "ssh user@host",
+            "npm install some-package",
+            "pip install requests",
+            "kill -9 1234",
+            "mv file1 file2",
+            "cp -r /etc /tmp",
+        ])("does not approve unsafe command: %s", (cmd) => {
+            expect(isFastApprove("Bash", { command: cmd })).toBeNull();
+        });
+
+        it.each(["ls | grep foo", "cat file.txt | wc -l", "echo hello > file.txt", "git status | head", "echo $(whoami)", "ls `pwd`"])(
+            "does not approve command with pipes/redirects/substitution: %s",
+            (cmd) => {
+                expect(isFastApprove("Bash", { command: cmd })).toBeNull();
+            }
+        );
+
+        it("does not approve empty command", () => {
+            expect(isFastApprove("Bash", { command: "" })).toBeNull();
+            expect(isFastApprove("Bash", {})).toBeNull();
+        });
+    });
+
+    describe("Edit/Write in cwd", () => {
+        it("approves Edit within cwd", () => {
+            expect(isFastApprove("Edit", { file_path: "/project/src/foo.ts" }, "/project")).not.toBeNull();
+        });
+
+        it("approves Write within cwd", () => {
+            expect(isFastApprove("Write", { file_path: "/project/new-file.ts" }, "/project")).not.toBeNull();
+        });
+
+        it("does not approve Edit outside cwd", () => {
+            expect(isFastApprove("Edit", { file_path: "/etc/passwd" }, "/project")).toBeNull();
+        });
+
+        it("does not approve Write outside cwd", () => {
+            expect(isFastApprove("Write", { file_path: "/home/user/.bashrc" }, "/project")).toBeNull();
+        });
+
+        it("does not approve Edit/Write when cwd is not provided", () => {
+            expect(isFastApprove("Edit", { file_path: "/project/foo.ts" })).toBeNull();
+            expect(isFastApprove("Write", { file_path: "/project/foo.ts" })).toBeNull();
+        });
+
+        it("does not approve when file_path is missing", () => {
+            expect(isFastApprove("Edit", {}, "/project")).toBeNull();
+            expect(isFastApprove("Write", {}, "/project")).toBeNull();
+        });
+
+        it("rejects path traversal outside cwd", () => {
+            expect(isFastApprove("Edit", { file_path: "/project/../etc/passwd" }, "/project")).toBeNull();
+        });
+    });
+
+    describe("other tools", () => {
+        it("returns null for tools not covered by fast-path", () => {
+            expect(isFastApprove("WebFetch", { url: "https://example.com" })).toBeNull();
+            expect(isFastApprove("Agent", { prompt: "do something" })).toBeNull();
+            expect(isFastApprove("mcp__server__tool", { input: "data" })).toBeNull();
+        });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// checkToolSafety - multi-tool formatting
+// ---------------------------------------------------------------------------
+
+describe("checkToolSafety multi-tool formatting", () => {
+    beforeEach(() => {
+        mockGetApiKey.mockReturnValue("test-key");
+        mockFetch.mockResolvedValue(mockApiResponse("approve", "Safe"));
+    });
+
+    it("formats Edit tool input with file path and old/new strings", async () => {
+        await checkToolSafety("Edit", {
+            file_path: "/project/src/foo.ts",
+            old_string: "old code",
+            new_string: "new code",
+        });
+
+        const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+        const content = body.messages[0].content;
+        expect(content).toContain("Tool: Edit");
+        expect(content).toContain("File: /project/src/foo.ts");
+        expect(content).toContain("<old_string>");
+        expect(content).toContain("old code");
+        expect(content).toContain("<new_string>");
+        expect(content).toContain("new code");
+    });
+
+    it("formats Write tool input with file path and content", async () => {
+        await checkToolSafety("Write", {
+            file_path: "/project/new-file.ts",
+            content: "file content here",
+        });
+
+        const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+        const content = body.messages[0].content;
+        expect(content).toContain("Tool: Write");
+        expect(content).toContain("File: /project/new-file.ts");
+        expect(content).toContain("<content>");
+        expect(content).toContain("file content here");
+    });
+
+    it("formats WebFetch tool input with URL", async () => {
+        await checkToolSafety("WebFetch", {
+            url: "https://example.com/api",
+            prompt: "get the data",
+        });
+
+        const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+        const content = body.messages[0].content;
+        expect(content).toContain("Tool: WebFetch");
+        expect(content).toContain("URL: https://example.com/api");
+    });
+
+    it("formats Agent tool input with prompt and subagent type", async () => {
+        await checkToolSafety("Agent", {
+            prompt: "search for files",
+            subagent_type: "Explore",
+        });
+
+        const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+        const content = body.messages[0].content;
+        expect(content).toContain("Tool: Agent");
+        expect(content).toContain("Subagent type: Explore");
+        expect(content).toContain("search for files");
+    });
+
+    it("formats MCP tool input as JSON", async () => {
+        await checkToolSafety("mcp__server__tool", {
+            param1: "value1",
+            param2: 42,
+        });
+
+        const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+        const content = body.messages[0].content;
+        expect(content).toContain("Tool: mcp__server__tool");
+        expect(content).toContain('"param1"');
+        expect(content).toContain('"value1"');
+    });
+
+    it("truncates large Write content", async () => {
+        const largeContent = "x".repeat(10000);
+        await checkToolSafety("Write", {
+            file_path: "/project/big.ts",
+            content: largeContent,
+        });
+
+        const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+        const content = body.messages[0].content;
+        expect(content).toContain("... (truncated)");
+        expect(content.length).toBeLessThan(largeContent.length);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// extractTaskContext
+// ---------------------------------------------------------------------------
+
+describe("extractTaskContext", () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "safety-ctx-"));
+    });
+
+    afterEach(() => {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    function writeTranscript(lines: object[]): string {
+        const filePath = path.join(tmpDir, "transcript.jsonl");
+        fs.writeFileSync(filePath, lines.map((l) => JSON.stringify(l)).join("\n"));
+        return filePath;
+    }
+
+    it("returns empty string for 'none' context level", () => {
+        const p = writeTranscript([{ type: "user", message: { content: "hello" } }]);
+        expect(extractTaskContext(p, "none")).toBe("");
+    });
+
+    it("returns empty string for missing transcript", () => {
+        expect(extractTaskContext("/nonexistent/file.jsonl", "user-only")).toBe("");
+    });
+
+    it("returns empty string for empty transcript", () => {
+        const p = writeTranscript([]);
+        expect(extractTaskContext(p, "user-only")).toBe("");
+    });
+
+    it("extracts user messages in user-only mode", () => {
+        const p = writeTranscript([
+            { type: "user", message: { content: "Fix the auth bug" } },
+            { type: "assistant", message: { content: "I will look at the code" } },
+            { type: "user", message: { content: "Also check the tests" } },
+        ]);
+        const ctx = extractTaskContext(p, "user-only");
+        expect(ctx).toContain("Fix the auth bug");
+        expect(ctx).toContain("Also check the tests");
+        expect(ctx).not.toContain("I will look at the code");
+        expect(ctx).toContain('<task-context level="user-only">');
+    });
+
+    it("includes assistant messages in full mode", () => {
+        const p = writeTranscript([
+            { type: "user", message: { content: "Fix the auth bug" } },
+            { type: "assistant", message: { content: "I will look at the code" } },
+        ]);
+        const ctx = extractTaskContext(p, "full");
+        expect(ctx).toContain("Fix the auth bug");
+        expect(ctx).toContain("I will look at the code");
+        expect(ctx).toContain("<untrusted-assistant>");
+        expect(ctx).toContain('<task-context level="full">');
+    });
+
+    it("handles array content blocks", () => {
+        const p = writeTranscript([{ type: "user", message: { content: [{ type: "text", text: "array content" }] } }]);
+        const ctx = extractTaskContext(p, "user-only");
+        expect(ctx).toContain("array content");
+    });
+
+    it("includes first user message even if not in recent window", () => {
+        const msgs = [
+            { type: "user", message: { content: "Initial task" } },
+            ...Array.from({ length: 10 }, (_, i) => ({ type: "user", message: { content: `msg ${i}` } })),
+        ];
+        const p = writeTranscript(msgs);
+        const ctx = extractTaskContext(p, "user-only");
+        expect(ctx).toContain("[Initial request]");
+        expect(ctx).toContain("Initial task");
+    });
+
+    it("does not duplicate first message if it is in the recent window", () => {
+        const p = writeTranscript([{ type: "user", message: { content: "Only message" } }]);
+        const ctx = extractTaskContext(p, "user-only");
+        expect(ctx).not.toContain("[Initial request]");
+        expect(ctx).toContain("Only message");
+    });
+
+    it("skips malformed JSON lines gracefully", () => {
+        const filePath = path.join(tmpDir, "bad.jsonl");
+        fs.writeFileSync(filePath, 'not json\n{"type":"user","message":{"content":"valid"}}\n');
+        const ctx = extractTaskContext(filePath, "user-only");
+        expect(ctx).toContain("valid");
+    });
+
+    it("returns empty string for empty transcript path", () => {
+        expect(extractTaskContext("", "user-only")).toBe("");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Block count tracking
+// ---------------------------------------------------------------------------
+
+describe("block count tracking", () => {
+    const testSessionId = `test-session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const blockDir = path.join(os.tmpdir(), "claude-safety-hook");
+
+    afterEach(() => {
+        try {
+            fs.unlinkSync(path.join(blockDir, `${testSessionId}.json`));
+        } catch {
+            // may not exist
+        }
+    });
+
+    it("returns zero state for unknown session", () => {
+        const state = getBlockState(testSessionId);
+        expect(state.consecutiveDenials).toBe(0);
+        expect(state.totalDenials).toBe(0);
+    });
+
+    it("increments both counters", () => {
+        const s1 = incrementBlockCount(testSessionId);
+        expect(s1.consecutiveDenials).toBe(1);
+        expect(s1.totalDenials).toBe(1);
+
+        const s2 = incrementBlockCount(testSessionId);
+        expect(s2.consecutiveDenials).toBe(2);
+        expect(s2.totalDenials).toBe(2);
+    });
+
+    it("resets consecutive but not total on approve", () => {
+        incrementBlockCount(testSessionId);
+        incrementBlockCount(testSessionId);
+        resetConsecutiveBlocks(testSessionId);
+
+        const state = getBlockState(testSessionId);
+        expect(state.consecutiveDenials).toBe(0);
+        expect(state.totalDenials).toBe(2);
+    });
+
+    it("degrades after 3 consecutive denials", () => {
+        expect(shouldDegradeToPrompt({ consecutiveDenials: 2, totalDenials: 2 })).toBe(false);
+        expect(shouldDegradeToPrompt({ consecutiveDenials: 3, totalDenials: 3 })).toBe(true);
+    });
+
+    it("degrades after 20 total denials", () => {
+        expect(shouldDegradeToPrompt({ consecutiveDenials: 0, totalDenials: 19 })).toBe(false);
+        expect(shouldDegradeToPrompt({ consecutiveDenials: 0, totalDenials: 20 })).toBe(true);
+    });
+
+    it("processHookInput degrades deny to prompt after threshold", async () => {
+        mockGetApiKey.mockReturnValue("test-key");
+        mockFetch.mockResolvedValue(mockApiResponse("deny", "Dangerous"));
+
+        const sessionId = `degrade-test-${Date.now()}`;
+
+        // First 3 denials should be hard deny
+        for (let i = 0; i < 3; i++) {
+            const result = await processHookInput({
+                tool_name: "Bash",
+                tool_input: { command: "rm -rf /" },
+                session_id: sessionId,
+            });
+            if (i < 2) {
+                expect(result?.decision).toBe("deny");
+            }
+        }
+
+        // After 3 consecutive, should degrade to null (prompt/fall-through)
+        const degraded = await processHookInput({
+            tool_name: "Bash",
+            tool_input: { command: "rm -rf /" },
+            session_id: sessionId,
+        });
+        expect(degraded).toBeNull();
+
+        // Cleanup
+        try {
+            fs.unlinkSync(path.join(blockDir, `${sessionId}.json`));
+        } catch {
+            // ignore
+        }
     });
 });

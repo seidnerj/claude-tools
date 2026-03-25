@@ -1,9 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-// Mock getApiKey before importing the module under test
+// Mock getApiKey and configGet before importing the module under test
 vi.mock("../utils.js", async (importOriginal) => {
     const actual = (await importOriginal()) as Record<string, unknown>;
-    return { ...actual, getApiKey: vi.fn(() => null) };
+    return {
+        ...actual,
+        getApiKey: vi.fn(() => null),
+        configGet: vi.fn((key: string) => {
+            if (key === "safety.billing_cch") return "64d93";
+            if (key === "safety.billing_cc_version") return "2.1.83.c50";
+            return null;
+        }),
+    };
 });
 
 // Mock fs/promises for resolveRequestedFiles tests
@@ -149,11 +157,11 @@ describe("checkCommandSafety", () => {
         // Verify the API was called with correct params
         expect(mockFetch).toHaveBeenCalledOnce();
         const [url, opts] = mockFetch.mock.calls[0];
-        expect(url).toBe("https://api.anthropic.com/v1/messages");
+        expect(url).toBe("https://api.anthropic.com/v1/messages?beta=true");
         expect(opts.headers["x-api-key"]).toBe("test-key");
 
         const body = JSON.parse(opts.body);
-        expect(body.model).toBe("claude-sonnet-4-6");
+        expect(body.model).toBe("claude-opus-4-6");
         expect(body.thinking).toEqual({ type: "adaptive" });
         const content = body.messages[0].content;
         expect(content).toContain("<untrusted-command>");

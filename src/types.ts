@@ -221,16 +221,99 @@ export interface SafetyCheckResult {
     decision: "approve" | "deny" | "prompt" | "needs_context";
     reason: string;
     files?: string[];
+    updatedInput?: Record<string, unknown>;
+    additionalContext?: string;
 }
 
 /** Input from the Claude Code hook system (PreToolUse) */
 export interface HookInput {
     tool_name: string;
-    tool_input: { command?: string; description?: string };
+    tool_input: Record<string, unknown>;
+    session_id?: string;
+    transcript_path?: string;
+    cwd?: string;
+    permission_mode?: string;
+    tool_use_id?: string;
 }
 
 /** Output to return to the Claude Code hook system */
 export interface HookOutput {
     decision: "allow" | "deny";
     reason: string;
+    updatedInput?: Record<string, unknown>;
+    additionalContext?: string;
+}
+
+/** Safety hook configuration stored in ~/.claude/key-config.json under "safety" */
+export interface SafetyConfig {
+    model: string;
+    context_level: "full" | "user-only" | "none";
+}
+
+/** Block count state for graceful degradation, persisted per session */
+export interface BlockState {
+    consecutiveDenials: number;
+    totalDenials: number;
+}
+
+/** A single status update within an incident timeline */
+export interface StatusUpdate {
+    /** Timestamp of this update (ISO 8601) */
+    timestamp: string;
+    /** Status label (e.g. "Investigating", "Monitoring", "Resolved") */
+    status: string;
+    /** Description text for this update */
+    message: string;
+}
+
+/** A single incident from the Claude status page */
+export interface StatusIncident {
+    /** Incident title */
+    title: string;
+    /** Link to the incident page */
+    link: string;
+    /** Publication date (ISO 8601) */
+    pubDate: string;
+    /** Current status (last update's status label) */
+    currentStatus: string;
+    /** Timeline of status updates, newest first */
+    updates: StatusUpdate[];
+}
+
+/** A Claude service component and its current status */
+export interface StatusComponent {
+    /** Component name (e.g. "claude.ai", "Claude API") */
+    name: string;
+    /** Current status (operational, degraded_performance, partial_outage, major_outage) */
+    status: string;
+}
+
+/** Real-time status from the summary API */
+export interface StatusSummary {
+    /** Overall status indicator (none, minor, major, critical) */
+    indicator: string;
+    /** Human-readable status description (e.g. "All Systems Operational") */
+    description: string;
+    /** Per-component statuses */
+    components: StatusComponent[];
+    /** Currently active incidents (empty when all clear) */
+    activeIncidents: string[];
+    /** Scheduled maintenance windows (empty when none) */
+    scheduledMaintenances: string[];
+    /** When the status page was last updated (ISO 8601) */
+    updatedAt: string;
+}
+
+/** Result of fetching Claude status */
+export interface StatusResult {
+    /** Real-time status summary (null if summary fetch failed but RSS succeeded) */
+    summary: StatusSummary | null;
+    /** Whether the overall status appears operational */
+    operational: boolean;
+    /** Number of incidents returned */
+    incidentCount: number;
+    /** Recent incidents from the RSS history feed, newest first */
+    incidents: StatusIncident[];
+    /** When the RSS feed was last published (ISO 8601) */
+    feedDate: string;
 }

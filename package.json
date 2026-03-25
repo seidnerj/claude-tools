@@ -5,6 +5,7 @@
         "claude-redact-secrets": "dist/bin/claude-redact-secrets.js",
         "claude-set-history": "dist/bin/claude-set-history.js",
         "claude-set-key": "dist/bin/claude-set-key.js",
+        "claude-status": "dist/bin/claude-status.js",
         "claude-title-sessions": "dist/bin/claude-title-sessions.js",
         "llm-safety-check": "dist/bin/llm-safety-check.js"
     },

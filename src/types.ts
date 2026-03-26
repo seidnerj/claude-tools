@@ -140,6 +140,13 @@ export interface MoveHistoryResult {
     brokenArtifactsCleaned: number;
 }
 
+/** Result of renaming a session */
+export interface RenameResult {
+    sessionId: string;
+    newTitle: string;
+    projectPath: string;
+}
+
 /** Result of generating a title for a session */
 export interface TitleResult {
     sessionId: string;

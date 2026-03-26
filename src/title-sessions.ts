@@ -4,7 +4,8 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { TitleResult, TitleProjectResult } from "./types.js";
+import type { RenameResult, TitleResult, TitleProjectResult } from "./types.js";
+import { findSessionFile } from "./find-session.js";
 import {
     PROJECTS_DIR,
     callClaude,
@@ -134,4 +135,14 @@ export async function titleProjectByPath(
     }
 
     return titleProject(projectDir, resolved, options);
+}
+
+/** Rename (set a custom title for) a Claude Code session. */
+export async function renameSession(sessionId: string, newTitle: string, projectPath?: string): Promise<RenameResult> {
+    const { filepath, projectPath: resolvedProject } = findSessionFile(sessionId, projectPath);
+    const entry = JSON.stringify({ type: "custom-title", sessionId, customTitle: newTitle });
+    await preserveMtime(filepath, () => {
+        fs.appendFileSync(filepath, entry + "\n");
+    });
+    return { sessionId, newTitle, projectPath: resolvedProject };
 }

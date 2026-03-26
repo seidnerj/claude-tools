@@ -38,28 +38,41 @@ if [ -n "$_CC_KEY" ]; then
     *"usage limits"*)   printf '\\033[33mdirenv: warning: API key quota exhausted\\033[0m\\n' >&2 ;;
     *)                  printf '\\033[33mdirenv: warning: API key is invalid\\033[0m\\n' >&2 ;;
   esac
-  if [ -n "$ANTHROPIC_ADMIN_SESSION_KEY" ] && [ -n "$ANTHROPIC_ORG_ID" ]; then
+  _CC_ADMIN=$(security find-generic-password -s "Claude Code $(echo -n "$PWD" | base64):admin" -w 2>/dev/null)
+  case "$_CC_ADMIN" in
+    *:*)
+      _CC_ORG="\${_CC_ADMIN%%:*}"
+      _CC_SK="\${_CC_ADMIN#*:}"
+      export ANTHROPIC_ORG_ID="$_CC_ORG"
+      export ANTHROPIC_ADMIN_SESSION_KEY="$_CC_SK"
+      ;;
+    *)
+      _CC_ORG="\${ANTHROPIC_ORG_ID:-}"
+      _CC_SK="\${ANTHROPIC_ADMIN_SESSION_KEY:-}"
+      ;;
+  esac
+  if [ -n "$_CC_SK" ] && [ -n "$_CC_ORG" ]; then
     _CC_META=$(security find-generic-password -s "Claude Code $(echo -n "$PWD" | base64):meta" -w 2>/dev/null)
     case "$_CC_META" in
       *:*) _CC_KEY_ID="\${_CC_META%%:*}" _CC_WS_ID="\${_CC_META##*:}" ;;
       *)   _CC_KEY_ID="" _CC_WS_ID="" ;;
     esac
     _CC_TMP1=$(mktemp) _CC_TMP2=$(mktemp) _CC_TMP3=$(mktemp)
-    curl -s "https://platform.claude.com/api/organizations/$ANTHROPIC_ORG_ID/current_spend" \\
-      -H "Cookie: sessionKey=$ANTHROPIC_ADMIN_SESSION_KEY" \\
+    curl -s "https://platform.claude.com/api/organizations/$_CC_ORG/current_spend" \\
+      -H "Cookie: sessionKey=$_CC_SK" \\
       -H "Content-Type: application/json" \\
       -H "anthropic-client-platform: web_console" > "$_CC_TMP1" 2>/dev/null &
     if [ -n "$_CC_WS_ID" ]; then
-      curl -s "https://platform.claude.com/api/organizations/$ANTHROPIC_ORG_ID/workspaces/$_CC_WS_ID/current_spend" \\
-        -H "Cookie: sessionKey=$ANTHROPIC_ADMIN_SESSION_KEY" \\
+      curl -s "https://platform.claude.com/api/organizations/$_CC_ORG/workspaces/$_CC_WS_ID/current_spend" \\
+        -H "Cookie: sessionKey=$_CC_SK" \\
         -H "Content-Type: application/json" \\
         -H "anthropic-client-platform: web_console" > "$_CC_TMP2" 2>/dev/null &
     fi
     if [ -n "$_CC_KEY_ID" ]; then
       _CC_MONTH=$(date +%Y-%m-01)
       _CC_NXMON=$(date -v+1m +%Y-%m-01)
-      curl -s "https://platform.claude.com/api/organizations/$ANTHROPIC_ORG_ID/usage_cost?starting_on=$_CC_MONTH&ending_before=$_CC_NXMON&group_by=api_key_id" \\
-        -H "Cookie: sessionKey=$ANTHROPIC_ADMIN_SESSION_KEY" \\
+      curl -s "https://platform.claude.com/api/organizations/$_CC_ORG/usage_cost?starting_on=$_CC_MONTH&ending_before=$_CC_NXMON&group_by=api_key_id" \\
+        -H "Cookie: sessionKey=$_CC_SK" \\
         -H "Content-Type: application/json" \\
         -H "anthropic-client-platform: web_console" > "$_CC_TMP3" 2>/dev/null &
     fi
@@ -81,7 +94,7 @@ if [ -n "$_CC_KEY" ]; then
     unset _CC_META _CC_KEY_ID _CC_WS_ID _CC_TMP1 _CC_TMP2 _CC_TMP3 _CC_MONTH _CC_NXMON
     unset _CC_ORG_AMT _CC_WS_AMT _CC_KEY_AMT _CC_WS_STR _CC_KEY_STR
   fi
-  unset _CC_RESP _CC_KEY
+  unset _CC_ADMIN _CC_ORG _CC_SK _CC_RESP _CC_KEY
   unset -f _cc_resolve_name 2>/dev/null
 fi`;
 
@@ -202,10 +215,77 @@ export function storeKeyMeta(directory: string, keyId: string, workspaceId: stri
     return securityAddPassword(metaKeychainName(directory), `${keyId}:${workspaceId}`);
 }
 
+/**
+ * Fetch the key's ID and workspace ID from the Console API and store them as metadata.
+ *
+ * Requires ANTHROPIC_ADMIN_SESSION_KEY and ANTHROPIC_ORG_ID to be set. Silently
+ * returns false if either is missing or if the key cannot be matched.
+ *
+ * Matching uses the partial_key_hint returned by the API (e.g. "sk-ant-api03-L79...qwAA"):
+ * the key must start with the prefix and end with the suffix.
+ */
+export async function fetchAndStoreKeyMeta(directory: string, apiKey: string, creds?: { sessionKey: string; orgId: string }): Promise<boolean> {
+    const sessionKey = creds?.sessionKey ?? process.env.ANTHROPIC_ADMIN_SESSION_KEY;
+    const orgId = creds?.orgId ?? process.env.ANTHROPIC_ORG_ID;
+    if (!sessionKey || !orgId) return false;
+
+    try {
+        const resp = await fetch(`https://platform.claude.com/api/organizations/${orgId}/api_keys?limit=100`, {
+            headers: {
+                Cookie: `sessionKey=${sessionKey}`,
+                "Content-Type": "application/json",
+                "anthropic-client-platform": "web_console",
+            },
+        });
+        if (!resp.ok) return false;
+        const data = (await resp.json()) as { data?: Array<{ id: string; workspace_id: string; partial_key_hint: string }> };
+        const keys = data.data ?? [];
+        const match = keys.find((k) => {
+            const [prefix, suffix] = k.partial_key_hint.split("...");
+            return prefix && suffix && apiKey.startsWith(prefix) && apiKey.endsWith(suffix);
+        });
+        if (!match) return false;
+        return storeKeyMeta(directory, match.id, match.workspace_id);
+    } catch {
+        return false;
+    }
+}
+
 /** Delete key metadata for a directory from the macOS Keychain. */
 export function deleteKeyMeta(directory: string): boolean {
     requireMacOS();
     return securityDeletePassword(metaKeychainName(directory));
+}
+
+// ---------------------------------------------------------------------------
+// Per-directory admin credentials (org_id + session key for spend tracking)
+// ---------------------------------------------------------------------------
+
+function adminKeychainName(directory: string): string {
+    return `${keychainName(directory)}:admin`;
+}
+
+/** Get stored admin credentials (org_id + session key) for a directory. */
+export function getAdminCreds(directory: string): { orgId: string; sessionKey: string } | null {
+    requireMacOS();
+    const raw = securityFindPassword(adminKeychainName(directory));
+    if (!raw) return null;
+    const idx = raw.indexOf(":");
+    if (idx < 0) return null;
+    return { orgId: raw.slice(0, idx), sessionKey: raw.slice(idx + 1) };
+}
+
+/** Store admin credentials (org_id + session key) for a directory. */
+export function storeAdminCreds(directory: string, orgId: string, sessionKey: string): boolean {
+    requireMacOS();
+    securityDeletePassword(adminKeychainName(directory));
+    return securityAddPassword(adminKeychainName(directory), `${orgId}:${sessionKey}`);
+}
+
+/** Delete admin credentials for a directory from the macOS Keychain. */
+export function deleteAdminCreds(directory: string): boolean {
+    requireMacOS();
+    return securityDeletePassword(adminKeychainName(directory));
 }
 
 /** Copy the API key from one directory to another. */
@@ -408,8 +488,8 @@ export function ensureEnvrc(directory: string): { created: boolean; appended: bo
     if (fs.existsSync(envrc)) {
         const content = fs.readFileSync(envrc, "utf-8");
 
-        // Current format: parallel spend display with account/workspace/key breakdown
-        if (content.includes("# managed by claude-tools") && content.includes("_cc_fmt_cents")) {
+        // Current format: parallel spend display with per-directory admin credential override
+        if (content.includes("# managed by claude-tools") && content.includes("_CC_ADMIN")) {
             return { created: false, appended: false, alreadyPresent: true, upgraded: false };
         }
 

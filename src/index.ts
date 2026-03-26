@@ -40,6 +40,10 @@ export {
     getKeyMeta,
     storeKeyMeta,
     deleteKeyMeta,
+    fetchAndStoreKeyMeta,
+    getAdminCreds,
+    storeAdminCreds,
+    deleteAdminCreds,
 } from "./set-key.js";
 export {
     checkCommandSafety,

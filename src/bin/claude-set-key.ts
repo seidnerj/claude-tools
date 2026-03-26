@@ -21,6 +21,11 @@ import {
     getCapturedKey,
     ensureEnvrc,
     removeEnvrcSnippet,
+    getKeyMeta,
+    fetchAndStoreKeyMeta,
+    getAdminCreds,
+    storeAdminCreds,
+    deleteAdminCreds,
 } from "../set-key.js";
 
 /** Label for the "Claude Code" default entry, cross-referencing captured slots. */
@@ -111,6 +116,12 @@ async function handleSet(ask: AskFn, directory: string, entries: ReturnType<type
     } else {
         console.log("Failed to store API key.");
         process.exit(1);
+    }
+
+    // Fetch and cache key ID + workspace ID for spend tracking in .envrc
+    const metaStored = await fetchAndStoreKeyMeta(directory, apiKey);
+    if (metaStored) {
+        console.log("Key metadata cached for workspace/key spend tracking.");
     }
 
     // Prompt for optional name
@@ -240,6 +251,56 @@ async function handleRename(ask: AskFn, directory: string, entries: ReturnType<t
     }
 }
 
+async function handleSetAdmin(ask: AskFn, directory: string): Promise<void> {
+    const existing = getAdminCreds(directory);
+    if (existing) {
+        console.log(`Current admin org: ${existing.orgId}`);
+        console.log(`Current session key: ${existing.sessionKey.slice(0, 20)}...`);
+        console.log();
+    }
+
+    const clear = existing ? await ask("Clear existing credentials? (y/N): ") : "";
+    if (clear.trim().toLowerCase() === "y") {
+        deleteAdminCreds(directory);
+        console.log("Admin credentials cleared.");
+        return;
+    }
+
+    console.log("Obtain your org ID and admin session key from the Anthropic Console.");
+    console.log("The session key is the 'sessionKey' cookie value (capture via Proxyman or browser DevTools).");
+    console.log();
+
+    const orgId = (await ask(`Org ID${existing ? ` [${existing.orgId}]` : ""}: `)).trim() || existing?.orgId || "";
+    if (!orgId) {
+        console.log("No org ID provided. Cancelled.");
+        return;
+    }
+
+    const sessionKey = (await ask("Admin session key: ")).trim();
+    if (!sessionKey) {
+        console.log("No session key provided. Cancelled.");
+        return;
+    }
+
+    const stored = storeAdminCreds(directory, orgId, sessionKey);
+    if (!stored) {
+        console.log("Failed to store admin credentials.");
+        return;
+    }
+    console.log("Admin credentials stored.");
+
+    // Try to populate key metadata using the new credentials
+    const apiKey = getKey(directory);
+    if (apiKey) {
+        const metaOk = await fetchAndStoreKeyMeta(directory, apiKey, { orgId, sessionKey });
+        if (metaOk) {
+            console.log("Key metadata cached for workspace/key spend tracking.");
+        } else {
+            console.log("Could not fetch key metadata (key may not belong to this org).");
+        }
+    }
+}
+
 async function handlePrune(): Promise<void> {
     const pruned = pruneOrphanedKeyNames();
     if (pruned === 0) {
@@ -281,6 +342,19 @@ async function main(): Promise<void> {
         // Non-fatal: .envrc setup failed (e.g. permissions)
     }
 
+    // Populate missing key metadata for spend tracking (best-effort, silent on failure)
+    try {
+        const existingKey = getKey(directory);
+        if (existingKey && !getKeyMeta(directory)) {
+            const populated = await fetchAndStoreKeyMeta(directory, existingKey);
+            if (populated) {
+                console.log("Key metadata cached for workspace/key spend tracking.");
+            }
+        }
+    } catch {
+        // Non-fatal
+    }
+
     console.log(`Directory: ${directory}`);
     console.log();
 
@@ -302,6 +376,7 @@ async function main(): Promise<void> {
     if (hasOthers || hasCurrentKey || listCapturedKeys().length > 0) {
         options.push({ id: "rename", label: "Name a key" });
     }
+    options.push({ id: "admin", label: "Set admin credentials (for per-directory spend tracking)" });
     options.push({ id: "prune", label: "Prune orphaned key names" });
 
     const readline = await import("node:readline");
@@ -346,6 +421,8 @@ async function main(): Promise<void> {
         await handleDelete(ask, directory, entries);
     } else if (action === "rename") {
         await handleRename(ask, directory, entries);
+    } else if (action === "admin") {
+        await handleSetAdmin(ask, directory);
     } else if (action === "prune") {
         await handlePrune();
     }

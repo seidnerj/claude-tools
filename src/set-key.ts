@@ -230,7 +230,7 @@ export async function fetchAndStoreKeyMeta(directory: string, apiKey: string, cr
     if (!sessionKey || !orgId) return false;
 
     try {
-        const resp = await fetch(`https://platform.claude.com/api/organizations/${orgId}/api_keys?limit=100`, {
+        const resp = await fetch(`https://platform.claude.com/api/console/organizations/${orgId}/api_keys?limit=100`, {
             headers: {
                 Cookie: `sessionKey=${sessionKey}`,
                 "Content-Type": "application/json",
@@ -238,14 +238,16 @@ export async function fetchAndStoreKeyMeta(directory: string, apiKey: string, cr
             },
         });
         if (!resp.ok) return false;
-        const data = (await resp.json()) as { data?: Array<{ id: string; workspace_id: string; partial_key_hint: string }> };
-        const keys = data.data ?? [];
+        // Console API returns a direct array; admin API returns { data: [] }
+        type KeyEntry = { id: string; workspace_id: string | null; partial_key_hint: string; status?: string };
+        const raw = (await resp.json()) as KeyEntry[] | { data?: KeyEntry[] };
+        const keys = (Array.isArray(raw) ? raw : (raw.data ?? [])).filter((k) => k.status !== "archived");
         const match = keys.find((k) => {
             const [prefix, suffix] = k.partial_key_hint.split("...");
             return prefix && suffix && apiKey.startsWith(prefix) && apiKey.endsWith(suffix);
         });
         if (!match) return false;
-        return storeKeyMeta(directory, match.id, match.workspace_id);
+        return storeKeyMeta(directory, match.id, match.workspace_id ?? "");
     } catch {
         return false;
     }

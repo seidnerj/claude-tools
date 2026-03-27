@@ -22,6 +22,7 @@ import {
     ensureEnvrc,
     removeEnvrcSnippet,
     getKeyMeta,
+    storeKeyMeta,
     fetchAndStoreKeyMeta,
     getAdminCreds,
     storeAdminCreds,
@@ -54,7 +55,7 @@ function printUsage(): void {
 }
 
 async function handleSet(ask: AskFn, directory: string, entries: ReturnType<typeof listKeychainEntries>): Promise<void> {
-    const sources: Array<{ label: string; action: () => string }> = [];
+    const sources: Array<{ label: string; action: () => string; sourceDir?: string }> = [];
 
     sources.push({
         label: "Enter a new API key",
@@ -72,6 +73,7 @@ async function handleSet(ask: AskFn, directory: string, entries: ReturnType<type
         const marker = other.exists ? "" : " *";
         sources.push({
             label: `Copy from ${other.dirPath}${marker} (${other.label})`,
+            sourceDir: other.dirPath,
             action: () => {
                 const key = getKey(other.dirPath);
                 return key;
@@ -80,6 +82,7 @@ async function handleSet(ask: AskFn, directory: string, entries: ReturnType<type
     }
 
     let apiKey = "";
+    let sourceDir: string | undefined;
 
     if (sources.length === 1) {
         // Only option is manual entry
@@ -98,9 +101,12 @@ async function handleSet(ask: AskFn, directory: string, entries: ReturnType<type
             return;
         }
 
-        apiKey = sources[idx - 1].action();
+        const chosen = sources[idx - 1];
+        apiKey = chosen.action();
         if (!apiKey) {
             apiKey = await ask("API key: ");
+        } else {
+            sourceDir = chosen.sourceDir;
         }
     }
 
@@ -118,10 +124,23 @@ async function handleSet(ask: AskFn, directory: string, entries: ReturnType<type
         process.exit(1);
     }
 
-    // Fetch and cache key ID + workspace ID for spend tracking in .envrc
-    const metaStored = await fetchAndStoreKeyMeta(directory, apiKey);
-    if (metaStored) {
-        console.log("Key metadata cached for workspace/key spend tracking.");
+    // Copy admin creds and metadata from source directory if this was a copy operation
+    if (sourceDir) {
+        const meta = getKeyMeta(sourceDir);
+        if (meta) storeKeyMeta(directory, meta.keyId, meta.workspaceId);
+        const adminCreds = getAdminCreds(sourceDir);
+        if (adminCreds) {
+            storeAdminCreds(directory, adminCreds.orgId, adminCreds.sessionKey);
+            console.log("Admin credentials and key metadata copied from source.");
+        }
+    }
+
+    // Fetch and cache key ID + workspace ID for spend tracking in .envrc (if not already copied)
+    if (!sourceDir || !getKeyMeta(directory)) {
+        const metaStored = await fetchAndStoreKeyMeta(directory, apiKey);
+        if (metaStored) {
+            console.log("Key metadata cached for workspace/key spend tracking.");
+        }
     }
 
     // Prompt for optional name

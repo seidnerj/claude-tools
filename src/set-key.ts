@@ -295,7 +295,14 @@ export function copyKey(fromDir: string, toDir: string): boolean {
     requireMacOS();
     const key = getKey(fromDir);
     if (!key) throw new Error(`No key found for: ${fromDir}`);
-    return storeKey(toDir, key);
+    const ok = storeKey(toDir, key);
+    if (ok) {
+        const meta = getKeyMeta(fromDir);
+        if (meta) storeKeyMeta(toDir, meta.keyId, meta.workspaceId);
+        const adminCreds = getAdminCreds(fromDir);
+        if (adminCreds) storeAdminCreds(toDir, adminCreds.orgId, adminCreds.sessionKey);
+    }
+    return ok;
 }
 
 /** Get the default Claude Code API key (set by Claude Code itself). */

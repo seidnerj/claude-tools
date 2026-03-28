@@ -398,6 +398,8 @@ export function listKeychainEntries(currentDir?: string): KeychainListResult {
         if (!m) continue;
         const enc = m[1];
         if (enc === currentEncoded) continue;
+        // Skip :meta and :admin auxiliary entries
+        if (enc.endsWith(":meta") || enc.endsWith(":admin")) continue;
 
         let dirPath: string;
         try {

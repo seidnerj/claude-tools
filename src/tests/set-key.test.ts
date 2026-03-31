@@ -435,9 +435,17 @@ describe("ensureEnvrc", () => {
     });
 
     it("reports alreadyPresent when current snippet is found", () => {
-        fs.writeFileSync(envrcPath, "# managed by claude-tools\nsome content\n_CC_ADMIN\nfi\n");
+        fs.writeFileSync(envrcPath, "# managed by claude-tools\nsome content\n_cc_fmt_usd\nfi\n");
         const result = ensureEnvrc(tmpDir);
         expect(result.alreadyPresent).toBe(true);
+    });
+
+    it("upgrades previous format (admin creds, no spend limits) to current version", () => {
+        fs.writeFileSync(envrcPath, "# managed by claude-tools\nsome content\n_CC_ADMIN\nfi\n");
+        const result = ensureEnvrc(tmpDir);
+        expect(result.upgraded).toBe(true);
+        const content = fs.readFileSync(envrcPath, "utf-8");
+        expect(content).toContain("_cc_fmt_usd");
     });
 
     it("upgrades previous format (spend display, no per-directory admin creds) to current version", () => {
@@ -445,7 +453,7 @@ describe("ensureEnvrc", () => {
         const result = ensureEnvrc(tmpDir);
         expect(result.upgraded).toBe(true);
         const content = fs.readFileSync(envrcPath, "utf-8");
-        expect(content).toContain("_CC_ADMIN");
+        expect(content).toContain("_cc_fmt_usd");
     });
 
     it("upgrades previous format (spend display, no parallel) to current version", () => {

@@ -84,23 +84,23 @@ if [ -n "$_CC_KEY" ]; then
     _cc_fmt_cents() {
       if [ -n "$1" ] && [ "$1" -gt 0 ] 2>/dev/null; then printf '$%s.%02d' "$(($1/100))" "$(($1%100))"; else printf 'unavailable'; fi
     }
-    _cc_fmt_usd() {
-      if [ -n "$1" ] && [ "$1" != "0" ] && [ "$1" != "null" ] 2>/dev/null; then printf ' ($%s)' "$1"; fi
+    _cc_fmt_limit() {
+      if [ -n "$1" ] && [ "$1" != "0" ] && [ "$1" != "null" ] 2>/dev/null; then printf ' (%s)' "$(_cc_fmt_cents "$1")"; fi
     }
     _CC_ORG_AMT=$(grep -o '"amount":[0-9]*' "$_CC_TMP1" 2>/dev/null | grep -o '[0-9]*')
     [ -n "$_CC_WS_ID" ] && _CC_WS_AMT=$(grep -o '"amount":[0-9]*' "$_CC_TMP2" 2>/dev/null | grep -o '[0-9]*')
-    [ -n "$_CC_WS_ID" ] && _CC_WS_LIMIT=$(grep -o '"enforced_limit_usd":[0-9.]*' "$_CC_TMP4" 2>/dev/null | grep -o '[0-9.]*')
+    [ -n "$_CC_WS_ID" ] && _CC_ACCT_LIMIT=$(grep -o '"enforced_limit_usd":[0-9]*' "$_CC_TMP4" 2>/dev/null | grep -o '[0-9]*')
     if [ -n "$_CC_KEY_ID" ] && [ -s "$_CC_TMP3" ]; then
       _CC_KEY_AMT=$(KEY_ID="$_CC_KEY_ID" python3 -c "import os,json,sys; d=json.load(open(sys.argv[1])); t=sum(e['total'] for day in d['costs'].values() for e in day if e['key_id']==os.environ['KEY_ID']); print(round(t))" "$_CC_TMP3" 2>/dev/null)
     fi
     rm -f "$_CC_TMP1" "$_CC_TMP2" "$_CC_TMP3" "$_CC_TMP4"
     _CC_WS_STR="n/a" _CC_KEY_STR="n/a"
-    [ -n "$_CC_WS_ID" ] && _CC_WS_STR="$(_cc_fmt_cents "$_CC_WS_AMT")$(_cc_fmt_usd "$_CC_WS_LIMIT")"
+    [ -n "$_CC_WS_ID" ] && _CC_WS_STR=$(_cc_fmt_cents "$_CC_WS_AMT")
     [ -n "$_CC_KEY_ID" ] && _CC_KEY_STR=$(_cc_fmt_cents "$_CC_KEY_AMT")
-    printf '\\033[36mdirenv: spend - account: %s | workspace: %s | key: %s\\033[0m\\n' "$(_cc_fmt_cents "$_CC_ORG_AMT")" "$_CC_WS_STR" "$_CC_KEY_STR" >&2
-    unset -f _cc_fmt_cents _cc_fmt_usd 2>/dev/null
+    printf '\\033[36mdirenv: spend - account: %s%s | workspace: %s | key: %s\\033[0m\\n' "$(_cc_fmt_cents "$_CC_ORG_AMT")" "$(_cc_fmt_limit "$_CC_ACCT_LIMIT")" "$_CC_WS_STR" "$_CC_KEY_STR" >&2
+    unset -f _cc_fmt_cents _cc_fmt_limit 2>/dev/null
     unset _CC_META _CC_KEY_ID _CC_WS_ID _CC_TMP1 _CC_TMP2 _CC_TMP3 _CC_TMP4 _CC_MONTH _CC_NXMON
-    unset _CC_ORG_AMT _CC_WS_AMT _CC_KEY_AMT _CC_WS_STR _CC_KEY_STR _CC_WS_LIMIT
+    unset _CC_ORG_AMT _CC_WS_AMT _CC_KEY_AMT _CC_WS_STR _CC_KEY_STR _CC_ACCT_LIMIT
   fi
   unset _CC_ADMIN _CC_ORG _CC_SK _CC_RESP _CC_KEY
   unset -f _cc_resolve_name 2>/dev/null
@@ -508,7 +508,7 @@ export function ensureEnvrc(directory: string): { created: boolean; appended: bo
         const content = fs.readFileSync(envrc, "utf-8");
 
         // Current format: spend display with limits and per-directory admin credential override
-        if (content.includes("# managed by claude-tools") && content.includes("_cc_fmt_usd")) {
+        if (content.includes("# managed by claude-tools") && content.includes("_cc_fmt_limit")) {
             return { created: false, appended: false, alreadyPresent: true, upgraded: false };
         }
 

@@ -15,14 +15,6 @@ Used as a dependency by [claude-tools-mcp](https://github.com/seidnerj/claude-to
 
 ## Installation
 
-As a library dependency:
-
-```bash
-npm install claude-tools
-```
-
-For development:
-
 ```bash
 git clone https://github.com/seidnerj/claude-tools.git
 cd claude-tools
@@ -44,7 +36,13 @@ All CLI tools require `tsx` installed globally (`npm install -g tsx`). Each tool
 
 ### Installation
 
-From a cloned repo (requires `tsx`):
+Via `npm link` (no `tsx` needed):
+
+```bash
+npm link
+```
+
+Or from a cloned repo (requires `tsx`):
 
 ```bash
 BIN_DIR="$(pwd)/src/bin"
@@ -53,12 +51,6 @@ sudo ln -sf "$BIN_DIR/claude-redact-secrets.ts" /usr/local/bin/claude-redact-sec
 sudo ln -sf "$BIN_DIR/claude-set-history.ts" /usr/local/bin/claude-set-history
 sudo ln -sf "$BIN_DIR/claude-set-key.ts" /usr/local/bin/claude-set-key
 sudo ln -sf "$BIN_DIR/claude-title-sessions.ts" /usr/local/bin/claude-title-sessions
-```
-
-Or via npm (no `tsx` needed):
-
-```bash
-npm install -g claude-tools
 ```
 
 ### LLM Safety Hook Setup
@@ -159,7 +151,7 @@ Claude Code's [Auto Mode](https://docs.anthropic.com/en/docs/claude-code/securit
 
 ## Library API
 
-All modules are re-exported from the package entry point:
+All modules are re-exported from the package entry point. If using `npm link`, import by package name; otherwise use a relative path:
 
 ```typescript
 import {

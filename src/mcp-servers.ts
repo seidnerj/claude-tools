@@ -193,32 +193,47 @@ export function updateMcpServer(
     name: string,
     updates: Partial<McpServerConfig>,
     projectPath?: string,
-    configPath = DEFAULT_CONFIG_PATH
+    configPath = DEFAULT_CONFIG_PATH,
+    newName?: string
 ): McpServerResult {
     const config = readClaudeConfig(configPath);
+    const effectiveName = newName ?? name;
 
     if (projectPath) {
         const result = getProjectServers(config, projectPath);
         if (!result || !(name in result.servers)) {
             throw new Error(`MCP server "${name}" not found in project: ${projectPath}`);
         }
+        if (newName && newName !== name && newName in result.servers) {
+            throw new Error(`MCP server "${newName}" already exists in project: ${result.projectKey}`);
+        }
         const backupPath = backupClaudeConfig(configPath);
         const merged = { ...result.servers[name], ...updates };
-        const projects = config.projects as Record<string, Record<string, unknown>>;
-        (projects[result.projectKey].mcpServers as Record<string, McpServerConfig>)[name] = merged;
+        const servers = (config.projects as Record<string, Record<string, unknown>>)[result.projectKey].mcpServers as Record<string, McpServerConfig>;
+        if (newName && newName !== name) {
+            delete servers[name];
+        }
+        servers[effectiveName] = merged;
         writeClaudeConfig(config, configPath);
-        return { success: true, backupPath, server: { name, config: merged, scope: "project", projectPath: result.projectKey } };
+        return { success: true, backupPath, server: { name: effectiveName, config: merged, scope: "project", projectPath: result.projectKey } };
     }
 
     const globalServers = getGlobalServers(config);
     if (!(name in globalServers)) {
         throw new Error(`MCP server "${name}" not found globally`);
     }
+    if (newName && newName !== name && newName in globalServers) {
+        throw new Error(`MCP server "${newName}" already exists globally`);
+    }
     const backupPath = backupClaudeConfig(configPath);
     const merged = { ...globalServers[name], ...updates };
-    (config.mcpServers as Record<string, McpServerConfig>)[name] = merged;
+    const mcpServers = config.mcpServers as Record<string, McpServerConfig>;
+    if (newName && newName !== name) {
+        delete mcpServers[name];
+    }
+    mcpServers[effectiveName] = merged;
     writeClaudeConfig(config, configPath);
-    return { success: true, backupPath, server: { name, config: merged, scope: "global" } };
+    return { success: true, backupPath, server: { name: effectiveName, config: merged, scope: "global" } };
 }
 
 // ---------------------------------------------------------------------------

@@ -243,6 +243,60 @@ describe("updateMcpServer", () => {
         const result = updateMcpServer("test-server", { args: [] }, undefined, configPath);
         expect(fs.existsSync(result.backupPath!)).toBe(true);
     });
+
+    it("renames a global server", () => {
+        const result = updateMcpServer("test-server", {}, undefined, configPath, "renamed-server");
+        expect(result.success).toBe(true);
+        expect(result.server!.name).toBe("renamed-server");
+        expect(getMcpServer("renamed-server", undefined, configPath)).not.toBeNull();
+        expect(getMcpServer("test-server", undefined, configPath)).toBeNull();
+    });
+
+    it("renames and updates a global server simultaneously", () => {
+        const result = updateMcpServer("test-server", { args: ["new-arg"] }, undefined, configPath, "renamed-server");
+        expect(result.success).toBe(true);
+        const server = getMcpServer("renamed-server", undefined, configPath);
+        expect(server!.config.args).toEqual(["new-arg"]);
+        expect(server!.config.command).toBe("node");
+        expect(getMcpServer("test-server", undefined, configPath)).toBeNull();
+    });
+
+    it("renames a project-scoped server", () => {
+        const result = updateMcpServer("project-server", {}, "/Users/test/my-project", configPath, "renamed-project-server");
+        expect(result.success).toBe(true);
+        expect(getMcpServer("renamed-project-server", "/Users/test/my-project", configPath)).not.toBeNull();
+        expect(getMcpServer("project-server", "/Users/test/my-project", configPath)).toBeNull();
+    });
+
+    it("throws if new name conflicts with existing global server", () => {
+        expect(() => updateMcpServer("test-server", {}, undefined, configPath, "remote-server")).toThrow(
+            'MCP server "remote-server" already exists globally'
+        );
+    });
+
+    it("throws if new name conflicts with existing project server", () => {
+        writeConfig({
+            ...SAMPLE_CONFIG,
+            projects: {
+                "/Users/test/my-project": {
+                    mcpServers: {
+                        "project-server": { type: "stdio" as const, command: "npx", args: ["-y", "my-mcp"] },
+                        "other-server": { type: "stdio" as const, command: "node", args: [] },
+                    },
+                },
+            },
+        });
+        expect(() => updateMcpServer("project-server", {}, "/Users/test/my-project", configPath, "other-server")).toThrow(
+            'MCP server "other-server" already exists in project'
+        );
+    });
+
+    it("no-ops when new name equals current name", () => {
+        const result = updateMcpServer("test-server", { args: ["updated"] }, undefined, configPath, "test-server");
+        expect(result.success).toBe(true);
+        expect(result.server!.name).toBe("test-server");
+        expect(getMcpServer("test-server", undefined, configPath)!.config.args).toEqual(["updated"]);
+    });
 });
 
 describe("removeMcpServer", () => {

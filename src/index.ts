@@ -11,7 +11,7 @@ export {
     llmSearchByPath,
     findSessionFile,
     readSession,
-    searchSession,
+    searchInSession,
     getCurrentSession,
     generateSessionNonce,
 } from "./find-session.js";

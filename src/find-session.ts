@@ -141,7 +141,7 @@ export function readSession(sessionId: string, options?: { projectPath?: string;
 // ---------------------------------------------------------------------------
 
 /** Search within a specific session for text matches. */
-export function searchSession(
+export function searchInSession(
     sessionId: string,
     searchText: string,
     options?: { projectPath?: string; caseSensitive?: boolean; contextChars?: number }

@@ -30,7 +30,8 @@
         ".": {
             "import": "./dist/index.js",
             "types": "./dist/index.d.ts"
-        }
+        },
+        "./tsconfig.json": "./tsconfig.json"
     },
     "keywords": [
         "claude",

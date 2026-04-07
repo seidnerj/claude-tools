@@ -169,10 +169,12 @@ function liveSessionWarnings(sessionIds: string[] | undefined, currentSessionId:
     if (!currentSessionId || !sessionIds) return [];
     if (!sessionIds.includes(currentSessionId)) return [];
     return [
-        `Session ${currentSessionId} appears to be the currently running session. ` +
-            "Moving or deleting a live session's history file causes the runtime to recreate it, " +
-            "resulting in a split transcript (pre-move snapshot at the destination, post-move continuation at the source). " +
-            "Consider using copy_history instead, then deleting the original after the session ends.",
+        `WARNING: Session ${currentSessionId} is the currently running session. ` +
+            "Moving or deleting a live session produces the same result as copying it (a point-in-time snapshot), " +
+            "but ALSO breaks the live session's transcript - the runtime will recreate the file and all subsequent " +
+            "messages will be written to a new, separate transcript. There is no advantage to moving over copying. " +
+            "STRONGLY RECOMMENDED: Use copy_history instead to get the snapshot without breaking the live session. " +
+            "If you need to clean up the original, delete it after the session ends.",
     ];
 }
 

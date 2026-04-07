@@ -627,6 +627,7 @@ describe("moveHistory with sessionIds", () => {
 
         expect(result.warnings).toBeDefined();
         expect(result.warnings![0]).toContain("currently running session");
+        expect(result.warnings![0]).toContain("STRONGLY RECOMMENDED");
         expect(result.warnings![0]).toContain("copy_history");
     });
 

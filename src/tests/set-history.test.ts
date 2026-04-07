@@ -619,4 +619,53 @@ describe("moveHistory with sessionIds", () => {
         createProjectDir("/test/old");
         await expect(moveHistory("/test/old", "/test/new", [])).rejects.toThrow(/at least one session ID/);
     });
+
+    it("warns when moving a live session (currentSessionId matches)", async () => {
+        createProjectDir("/test/old", { "live-sess.jsonl": makeSessionLine("/test/old") });
+
+        const result = await moveHistory("/test/old", "/test/new", ["live-sess"], "live-sess");
+
+        expect(result.warnings).toBeDefined();
+        expect(result.warnings![0]).toContain("currently running session");
+        expect(result.warnings![0]).toContain("copy_history");
+    });
+
+    it("no warning when currentSessionId does not match", async () => {
+        createProjectDir("/test/old", { "other-sess.jsonl": makeSessionLine("/test/old") });
+
+        const result = await moveHistory("/test/old", "/test/new", ["other-sess"], "different-sess");
+
+        expect(result.warnings).toBeUndefined();
+    });
+
+    it("no warning when currentSessionId is not provided", async () => {
+        createProjectDir("/test/old", { "sess-a.jsonl": makeSessionLine("/test/old") });
+
+        const result = await moveHistory("/test/old", "/test/new", ["sess-a"]);
+
+        expect(result.warnings).toBeUndefined();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Per-session: deleteHistory live session warnings
+// ---------------------------------------------------------------------------
+
+describe("deleteHistory live session warnings", () => {
+    it("warns when deleting a live session", async () => {
+        createProjectDir("/test/project", { "live-sess.jsonl": makeSessionLine("/test/project") });
+
+        const result = await deleteHistory("/test/project", ["live-sess"], "live-sess");
+
+        expect(result.warnings).toBeDefined();
+        expect(result.warnings![0]).toContain("currently running session");
+    });
+
+    it("no warning when currentSessionId does not match", async () => {
+        createProjectDir("/test/project", { "other.jsonl": makeSessionLine("/test/project") });
+
+        const result = await deleteHistory("/test/project", ["other"], "different");
+
+        expect(result.warnings).toBeUndefined();
+    });
 });

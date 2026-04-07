@@ -136,6 +136,8 @@ export interface DeleteHistoryResult {
     sessionIds?: string[];
     /** Requested session IDs that were not found in the project */
     sessionsNotFound?: string[];
+    /** Warnings about potentially destructive operations (e.g. operating on a live session) */
+    warnings?: string[];
 }
 
 /** Result of moving history from one path to another */
@@ -150,6 +152,8 @@ export interface MoveHistoryResult {
     sessionIds?: string[];
     /** Requested session IDs that were not found in the source project */
     sessionsNotFound?: string[];
+    /** Warnings about potentially destructive operations (e.g. operating on a live session) */
+    warnings?: string[];
 }
 
 /** Result of renaming a session */

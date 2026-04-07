@@ -164,6 +164,18 @@ async function updateSessionRefsForFiles(projectDir: string, sessionIds: string[
     return updated;
 }
 
+/** Build warnings for sessions that match the current live session. */
+function liveSessionWarnings(sessionIds: string[] | undefined, currentSessionId: string | undefined): string[] {
+    if (!currentSessionId || !sessionIds) return [];
+    if (!sessionIds.includes(currentSessionId)) return [];
+    return [
+        `Session ${currentSessionId} appears to be the currently running session. ` +
+            "Moving or deleting a live session's history file causes the runtime to recreate it, " +
+            "resulting in a split transcript (pre-move snapshot at the destination, post-move continuation at the source). " +
+            "Consider using copy_history instead, then deleting the original after the session ends.",
+    ];
+}
+
 /** Ensure a project directory exists under ~/.claude/projects/, creating it with a minimal sessions-index.json if needed. */
 function ensureProjectDir(projectPath: string): string {
     const dirName = pathToDirname(projectPath);
@@ -327,7 +339,7 @@ export async function copyHistory(sourcePath: string, destPath: string, sessionI
  * When sessionIds is provided, deletes only the specified sessions - the project
  * directory and remaining sessions are preserved.
  */
-export async function deleteHistory(targetPath: string, sessionIds?: string[]): Promise<DeleteHistoryResult> {
+export async function deleteHistory(targetPath: string, sessionIds?: string[], currentSessionId?: string): Promise<DeleteHistoryResult> {
     requireProjectsDir();
 
     targetPath = path.resolve(targetPath).replace(/\/+$/, "");
@@ -350,11 +362,14 @@ export async function deleteHistory(targetPath: string, sessionIds?: string[]): 
             deleteSessionFiles(projectDir, found);
         }
 
+        const warnings = liveSessionWarnings(found, currentSessionId);
+
         return {
             targetPath,
             historyFileUpdated: false,
             sessionIds: found,
             sessionsNotFound: notFound.length > 0 ? notFound : undefined,
+            warnings: warnings.length > 0 ? warnings : undefined,
         };
     }
 
@@ -372,7 +387,7 @@ export async function deleteHistory(targetPath: string, sessionIds?: string[]): 
  * When sessionIds is provided, moves only the specified sessions - both source and
  * destination project directories may already exist.
  */
-export async function moveHistory(oldPath: string, newPath: string, sessionIds?: string[]): Promise<MoveHistoryResult> {
+export async function moveHistory(oldPath: string, newPath: string, sessionIds?: string[], currentSessionId?: string): Promise<MoveHistoryResult> {
     requireProjectsDir();
 
     oldPath = path.resolve(oldPath).replace(/\/+$/, "");
@@ -407,6 +422,8 @@ export async function moveHistory(oldPath: string, newPath: string, sessionIds?:
             deleteSessionFiles(oldProjectDir, found);
         }
 
+        const warnings = liveSessionWarnings(found, currentSessionId);
+
         return {
             oldPath,
             newPath,
@@ -416,6 +433,7 @@ export async function moveHistory(oldPath: string, newPath: string, sessionIds?:
             brokenArtifactsCleaned: 0,
             sessionIds: found,
             sessionsNotFound: copyResult.sessionsNotFound,
+            warnings: warnings.length > 0 ? warnings : undefined,
         };
     }
 

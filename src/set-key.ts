@@ -29,15 +29,17 @@ if [ -n "$_CC_KEY" ]; then
     export ANTHROPIC_API_KEY="$_CC_KEY"
     printf '\\033[36mdirenv: using API key: %s\\033[0m\\n' "$(_cc_resolve_name "$_CC_KEY")" >&2
   fi
-  _CC_RESP=$(curl -s https://api.anthropic.com/v1/messages/count_tokens \\
-    -H "x-api-key: $_CC_KEY" -H "anthropic-version: 2023-06-01" \\
-    -H "content-type: application/json" \\
-    -d '{"model":"claude-haiku-4-5-20251001","messages":[{"role":"user","content":"a"}]}')
-  case "$_CC_RESP" in
-    *'"input_tokens"'*) ;;
-    *"usage limits"*)   printf '\\033[33mdirenv: warning: API key quota exhausted\\033[0m\\n' >&2 ;;
-    *)                  printf '\\033[33mdirenv: warning: API key is invalid\\033[0m\\n' >&2 ;;
-  esac
+  (
+    _CC_RESP=$(curl -s https://api.anthropic.com/v1/messages/count_tokens \\
+      -H "x-api-key: $_CC_KEY" -H "anthropic-version: 2023-06-01" \\
+      -H "content-type: application/json" \\
+      -d '{"model":"claude-haiku-4-5-20251001","messages":[{"role":"user","content":"a"}]}')
+    case "$_CC_RESP" in
+      *'"input_tokens"'*) ;;
+      *"usage limits"*)   printf '\\033[33mdirenv: warning: API key quota exhausted\\033[0m\\n' > /dev/tty ;;
+      *)                  printf '\\033[33mdirenv: warning: API key is invalid\\033[0m\\n' > /dev/tty ;;
+    esac
+  ) </dev/null &>/dev/null &
   _CC_ADMIN=$(security find-generic-password -s "Claude Code $(echo -n "$PWD" | base64):admin" -w 2>/dev/null)
   case "$_CC_ADMIN" in
     *:*)
@@ -57,52 +59,52 @@ if [ -n "$_CC_KEY" ]; then
       *:*) _CC_KEY_ID="\${_CC_META%%:*}" _CC_WS_ID="\${_CC_META##*:}" ;;
       *)   _CC_KEY_ID="" _CC_WS_ID="" ;;
     esac
-    _CC_TMP1=$(mktemp) _CC_TMP2=$(mktemp) _CC_TMP3=$(mktemp) _CC_TMP4=$(mktemp)
-    curl -s "https://platform.claude.com/api/organizations/$_CC_ORG/current_spend" \\
-      -H "Cookie: sessionKey=$_CC_SK" \\
-      -H "Content-Type: application/json" \\
-      -H "anthropic-client-platform: web_console" > "$_CC_TMP1" 2>/dev/null &
-    if [ -n "$_CC_WS_ID" ]; then
-      curl -s "https://platform.claude.com/api/organizations/$_CC_ORG/workspaces/$_CC_WS_ID/current_spend" \\
+    (
+      _CC_TMP1=$(mktemp) _CC_TMP2=$(mktemp) _CC_TMP3=$(mktemp) _CC_TMP4=$(mktemp)
+      curl -s "https://platform.claude.com/api/organizations/$_CC_ORG/current_spend" \\
         -H "Cookie: sessionKey=$_CC_SK" \\
         -H "Content-Type: application/json" \\
-        -H "anthropic-client-platform: web_console" > "$_CC_TMP2" 2>/dev/null &
-      curl -s "https://platform.claude.com/api/organizations/$_CC_ORG/workspaces/$_CC_WS_ID/spend_limits_v2" \\
-        -H "Cookie: sessionKey=$_CC_SK" \\
-        -H "Content-Type: application/json" \\
-        -H "anthropic-client-platform: web_console" > "$_CC_TMP4" 2>/dev/null &
-    fi
-    if [ -n "$_CC_KEY_ID" ]; then
-      _CC_MONTH=$(date +%Y-%m-01)
-      _CC_NXMON=$(date -v+1m +%Y-%m-01)
-      curl -s "https://platform.claude.com/api/organizations/$_CC_ORG/usage_cost?starting_on=$_CC_MONTH&ending_before=$_CC_NXMON&group_by=api_key_id" \\
-        -H "Cookie: sessionKey=$_CC_SK" \\
-        -H "Content-Type: application/json" \\
-        -H "anthropic-client-platform: web_console" > "$_CC_TMP3" 2>/dev/null &
-    fi
-    wait
-    _cc_fmt_cents() {
-      if [ -n "$1" ] && [ "$1" -gt 0 ] 2>/dev/null; then printf '$%s.%02d' "$(($1/100))" "$(($1%100))"; else printf 'unavailable'; fi
-    }
-    _cc_fmt_limit() {
-      if [ -n "$1" ] && [ "$1" != "0" ] && [ "$1" != "null" ] 2>/dev/null; then printf ' (%s)' "$(_cc_fmt_cents "$1")"; fi
-    }
-    _CC_ORG_AMT=$(grep -o '"amount":[0-9]*' "$_CC_TMP1" 2>/dev/null | grep -o '[0-9]*')
-    [ -n "$_CC_WS_ID" ] && _CC_WS_AMT=$(grep -o '"amount":[0-9]*' "$_CC_TMP2" 2>/dev/null | grep -o '[0-9]*')
-    [ -n "$_CC_WS_ID" ] && _CC_ACCT_LIMIT=$(grep -o '"enforced_limit_usd":[0-9]*' "$_CC_TMP4" 2>/dev/null | grep -o '[0-9]*')
-    if [ -n "$_CC_KEY_ID" ] && [ -s "$_CC_TMP3" ]; then
-      _CC_KEY_AMT=$(KEY_ID="$_CC_KEY_ID" python3 -c "import os,json,sys; d=json.load(open(sys.argv[1])); t=sum(e['total'] for day in d['costs'].values() for e in day if e['key_id']==os.environ['KEY_ID']); print(round(t))" "$_CC_TMP3" 2>/dev/null)
-    fi
-    rm -f "$_CC_TMP1" "$_CC_TMP2" "$_CC_TMP3" "$_CC_TMP4"
-    _CC_WS_STR="n/a" _CC_KEY_STR="n/a"
-    [ -n "$_CC_WS_ID" ] && _CC_WS_STR=$(_cc_fmt_cents "$_CC_WS_AMT")
-    [ -n "$_CC_KEY_ID" ] && _CC_KEY_STR=$(_cc_fmt_cents "$_CC_KEY_AMT")
-    printf '\\033[36mdirenv: spend - account: %s%s | workspace: %s | key: %s\\033[0m\\n' "$(_cc_fmt_cents "$_CC_ORG_AMT")" "$(_cc_fmt_limit "$_CC_ACCT_LIMIT")" "$_CC_WS_STR" "$_CC_KEY_STR" >&2
-    unset -f _cc_fmt_cents _cc_fmt_limit 2>/dev/null
-    unset _CC_META _CC_KEY_ID _CC_WS_ID _CC_TMP1 _CC_TMP2 _CC_TMP3 _CC_TMP4 _CC_MONTH _CC_NXMON
-    unset _CC_ORG_AMT _CC_WS_AMT _CC_KEY_AMT _CC_WS_STR _CC_KEY_STR _CC_ACCT_LIMIT
+        -H "anthropic-client-platform: web_console" > "$_CC_TMP1" 2>/dev/null &
+      if [ -n "$_CC_WS_ID" ]; then
+        curl -s "https://platform.claude.com/api/organizations/$_CC_ORG/workspaces/$_CC_WS_ID/current_spend" \\
+          -H "Cookie: sessionKey=$_CC_SK" \\
+          -H "Content-Type: application/json" \\
+          -H "anthropic-client-platform: web_console" > "$_CC_TMP2" 2>/dev/null &
+        curl -s "https://platform.claude.com/api/organizations/$_CC_ORG/workspaces/$_CC_WS_ID/spend_limits_v2" \\
+          -H "Cookie: sessionKey=$_CC_SK" \\
+          -H "Content-Type: application/json" \\
+          -H "anthropic-client-platform: web_console" > "$_CC_TMP4" 2>/dev/null &
+      fi
+      if [ -n "$_CC_KEY_ID" ]; then
+        _CC_MONTH=$(date +%Y-%m-01)
+        _CC_NXMON=$(date -v+1m +%Y-%m-01)
+        curl -s "https://platform.claude.com/api/organizations/$_CC_ORG/usage_cost?starting_on=$_CC_MONTH&ending_before=$_CC_NXMON&group_by=api_key_id" \\
+          -H "Cookie: sessionKey=$_CC_SK" \\
+          -H "Content-Type: application/json" \\
+          -H "anthropic-client-platform: web_console" > "$_CC_TMP3" 2>/dev/null &
+      fi
+      wait
+      _cc_fmt_cents() {
+        if [ -n "$1" ] && [ "$1" -gt 0 ] 2>/dev/null; then printf '$%s.%02d' "$(($1/100))" "$(($1%100))"; else printf 'unavailable'; fi
+      }
+      _cc_fmt_limit() {
+        if [ -n "$1" ] && [ "$1" != "0" ] && [ "$1" != "null" ] 2>/dev/null; then printf ' (%s)' "$(_cc_fmt_cents "$1")"; fi
+      }
+      _CC_ORG_AMT=$(grep -o '"amount":[0-9]*' "$_CC_TMP1" 2>/dev/null | grep -o '[0-9]*')
+      [ -n "$_CC_WS_ID" ] && _CC_WS_AMT=$(grep -o '"amount":[0-9]*' "$_CC_TMP2" 2>/dev/null | grep -o '[0-9]*')
+      [ -n "$_CC_WS_ID" ] && _CC_ACCT_LIMIT=$(grep -o '"enforced_limit_usd":[0-9]*' "$_CC_TMP4" 2>/dev/null | grep -o '[0-9]*')
+      if [ -n "$_CC_KEY_ID" ] && [ -s "$_CC_TMP3" ]; then
+        _CC_KEY_AMT=$(KEY_ID="$_CC_KEY_ID" python3 -c "import os,json,sys; d=json.load(open(sys.argv[1])); t=sum(e['total'] for day in d['costs'].values() for e in day if e['key_id']==os.environ['KEY_ID']); print(round(t))" "$_CC_TMP3" 2>/dev/null)
+      fi
+      rm -f "$_CC_TMP1" "$_CC_TMP2" "$_CC_TMP3" "$_CC_TMP4"
+      _CC_WS_STR="n/a" _CC_KEY_STR="n/a"
+      [ -n "$_CC_WS_ID" ] && _CC_WS_STR=$(_cc_fmt_cents "$_CC_WS_AMT")
+      [ -n "$_CC_KEY_ID" ] && _CC_KEY_STR=$(_cc_fmt_cents "$_CC_KEY_AMT")
+      printf '\\033[36mdirenv: spend - account: %s%s | workspace: %s | key: %s\\033[0m\\n' "$(_cc_fmt_cents "$_CC_ORG_AMT")" "$(_cc_fmt_limit "$_CC_ACCT_LIMIT")" "$_CC_WS_STR" "$_CC_KEY_STR" > /dev/tty
+    ) </dev/null &>/dev/null &
+    unset _CC_META _CC_KEY_ID _CC_WS_ID
   fi
-  unset _CC_ADMIN _CC_ORG _CC_SK _CC_RESP _CC_KEY
+  unset _CC_ADMIN _CC_ORG _CC_SK _CC_KEY
   unset -f _cc_resolve_name 2>/dev/null
 fi`;
 
@@ -508,7 +510,7 @@ export function ensureEnvrc(directory: string): { created: boolean; appended: bo
         const content = fs.readFileSync(envrc, "utf-8");
 
         // Current format: spend display with limits and per-directory admin credential override
-        if (content.includes("# managed by claude-tools") && content.includes("_cc_fmt_limit")) {
+        if (content.includes("# managed by claude-tools") && content.includes("/dev/tty")) {
             return { created: false, appended: false, alreadyPresent: true, upgraded: false };
         }
 

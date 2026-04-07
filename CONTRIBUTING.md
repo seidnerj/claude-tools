@@ -30,14 +30,20 @@ Tests use [vitest](https://vitest.dev/). Tests live in `src/tests/`.
 
 The following checks run automatically on commit:
 
+- **trailing-whitespace** - Trim trailing whitespace
+- **end-of-file-fixer** - Ensure files end with newline
+- **mixed-line-ending** - Normalize to LF
+- **check-merge-conflict** - Check for merge conflict markers
+- **check-added-large-files** - Prevent large file commits
+- **check-json** - Validate JSON syntax
+- **check-yaml** - Validate YAML syntax
+- **pretty-format-json** - Auto-format JSON files
+- **detect-secrets** - Secret detection
 - **prettier** - Code and config formatting
 - **eslint** - TypeScript linting with auto-fix
 - **tsc** - Type checking
 - **vitest** - Test suite
-- **trailing-whitespace** - Trim trailing whitespace
-- **end-of-file-fixer** - Ensure files end with newline
-- **mixed-line-ending** - Normalize to LF
-- **detect-secrets** - Secret detection
+- **check-claude-attribution** - Commit message policy
 
 Run all hooks manually:
 

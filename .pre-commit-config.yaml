@@ -8,34 +8,25 @@ repos:
       rev: v5.0.0
       hooks:
           - id: trailing-whitespace
-            exclude: \.claude/settings\.local\.json$
 
           - id: end-of-file-fixer
-            exclude: \.claude/settings\.local\.json$
 
           - id: mixed-line-ending
-            name: normalize line endings
             args: [--fix=lf]
-            exclude: \.claude/settings\.local\.json$
 
           - id: check-merge-conflict
-            name: check for merge conflicts
 
           - id: check-added-large-files
-            name: check for large files
             args: ["--maxkb=500"]
 
           - id: check-json
-            name: check json
 
           - id: check-yaml
-            name: check yaml
             args: [--allow-multiple-documents]
 
           - id: pretty-format-json
-            name: pretty format JSON
             args: [--autofix, --indent, "4"]
-            exclude: (\.claude/settings\.local\.json$|tsconfig\.json$)
+            exclude: tsconfig\.json$
 
     # Detect secrets
     - repo: https://github.com/Yelp/detect-secrets

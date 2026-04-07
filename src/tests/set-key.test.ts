@@ -435,7 +435,7 @@ describe("ensureEnvrc", () => {
     });
 
     it("reports alreadyPresent when current snippet is found", () => {
-        fs.writeFileSync(envrcPath, "# managed by claude-tools\nsome content\n_cc_fmt_limit\nfi\n");
+        fs.writeFileSync(envrcPath, "# managed by claude-tools\nsome content\n/dev/tty\nfi\n");
         const result = ensureEnvrc(tmpDir);
         expect(result.alreadyPresent).toBe(true);
     });
@@ -445,7 +445,7 @@ describe("ensureEnvrc", () => {
         const result = ensureEnvrc(tmpDir);
         expect(result.upgraded).toBe(true);
         const content = fs.readFileSync(envrcPath, "utf-8");
-        expect(content).toContain("_cc_fmt_limit");
+        expect(content).toContain("/dev/tty");
     });
 
     it("upgrades previous format (spend display, no per-directory admin creds) to current version", () => {

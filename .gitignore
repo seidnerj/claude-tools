@@ -1,12 +1,25 @@
+node_modules/
 dist/
 build/
+*.tsbuildinfo
 
+# Environment
 .env
-.envrc
+.env.local
 
-.claude/
+# IDE
+.vscode/
 .idea/
 .DS_Store
-temp/
 
-node_modules/
+# Claude Code
+.claude/
+
+# Coverage
+coverage/
+
+# direnv
+.envrc
+
+# Misc
+temp/

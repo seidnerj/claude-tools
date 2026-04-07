@@ -200,4 +200,4 @@ npm run build         # Compile TypeScript
 
 ## License
 
-MIT
+MIT - see [LICENSE](LICENSE).

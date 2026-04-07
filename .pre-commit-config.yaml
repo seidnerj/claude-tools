@@ -23,7 +23,7 @@ repos:
 
           - id: check-added-large-files
             name: check for large files
-            args: ["--maxkb=1000"]
+            args: ["--maxkb=500"]
 
           - id: check-json
             name: check json
@@ -63,14 +63,14 @@ repos:
 
           - id: typescript-check
             name: typescript type check
-            entry: npx tsc --noEmit
+            entry: bash -c 'npx tsc --noEmit'
             language: system
             types: [ts]
             pass_filenames: false
 
           - id: run-tests
             name: run tests
-            entry: npx vitest run
+            entry: bash -c 'npx vitest run'
             language: system
             types: [ts]
             pass_filenames: false

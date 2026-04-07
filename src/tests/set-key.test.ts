@@ -682,6 +682,7 @@ describe("zsh hook", () => {
         const content = fs.readFileSync(path.join(tmpDir, ".zshrc"), "utf-8");
         expect(content).toContain("TRAPUSR1()");
         expect(content).toContain("zle reset-prompt");
+        expect(content).toContain(".claude-tools-usr1-$$");
     });
 
     it("appends hook to existing ~/.zshrc", () => {

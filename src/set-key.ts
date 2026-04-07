@@ -37,8 +37,8 @@ if [ -n "$_CC_KEY" ]; then
       -d '{"model":"claude-haiku-4-5-20251001","messages":[{"role":"user","content":"a"}]}')
     case "$_CC_RESP" in
       *'"input_tokens"'*) ;;
-      *"usage limits"*)   printf '\\n\\033[33mdirenv: warning: API key quota exhausted\\033[0m\\n' > /dev/tty; kill -USR1 $_CC_SHELL_PID 2>/dev/null ;;
-      *)                  printf '\\n\\033[33mdirenv: warning: API key is invalid\\033[0m\\n' > /dev/tty; kill -USR1 $_CC_SHELL_PID 2>/dev/null ;;
+      *"usage limits"*)   printf '\\n\\033[33mdirenv: warning: API key quota exhausted\\033[0m\\n' > /dev/tty; [ -f "/tmp/.claude-tools-usr1-$_CC_SHELL_PID" ] && kill -USR1 $_CC_SHELL_PID 2>/dev/null ;;
+      *)                  printf '\\n\\033[33mdirenv: warning: API key is invalid\\033[0m\\n' > /dev/tty; [ -f "/tmp/.claude-tools-usr1-$_CC_SHELL_PID" ] && kill -USR1 $_CC_SHELL_PID 2>/dev/null ;;
     esac
   ) </dev/null &>/dev/null 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
   _CC_ADMIN=$(security find-generic-password -s "Claude Code $(echo -n "$PWD" | base64):admin" -w 2>/dev/null)
@@ -101,8 +101,14 @@ if [ -n "$_CC_KEY" ]; then
       _CC_WS_STR="n/a" _CC_KEY_STR="n/a"
       [ -n "$_CC_WS_ID" ] && _CC_WS_STR=$(_cc_fmt_cents "$_CC_WS_AMT")
       [ -n "$_CC_KEY_ID" ] && _CC_KEY_STR=$(_cc_fmt_cents "$_CC_KEY_AMT")
-      printf '\\n\\033[36mdirenv: spend - account: %s%s | workspace: %s | key: %s\\033[0m\\n' "$(_cc_fmt_cents "$_CC_ORG_AMT")" "$(_cc_fmt_limit "$_CC_ACCT_LIMIT")" "$_CC_WS_STR" "$_CC_KEY_STR" > /dev/tty
-      kill -USR1 $_CC_SHELL_PID 2>/dev/null
+      _CC_DEDUP="/tmp/.claude-tools-spend-$_CC_ORG"
+      _CC_NOW=$(date +%s)
+      _CC_PREV=$(cat "$_CC_DEDUP" 2>/dev/null || echo 0)
+      if [ "$((_CC_NOW - _CC_PREV))" -ge 3 ]; then
+        printf '\\n\\033[36mdirenv: spend - account: %s%s | workspace: %s | key: %s\\033[0m\\n' "$(_cc_fmt_cents "$_CC_ORG_AMT")" "$(_cc_fmt_limit "$_CC_ACCT_LIMIT")" "$_CC_WS_STR" "$_CC_KEY_STR" > /dev/tty
+        echo "$_CC_NOW" > "$_CC_DEDUP"
+        [ -f "/tmp/.claude-tools-usr1-$_CC_SHELL_PID" ] && kill -USR1 $_CC_SHELL_PID 2>/dev/null
+      fi
     ) </dev/null &>/dev/null 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
     unset _CC_META _CC_KEY_ID _CC_WS_ID
   fi
@@ -624,7 +630,8 @@ export function pruneOrphanedKeyNames(): number {
 
 const ZSH_HOOK_MARKER = "# claude-tools: async prompt redraw";
 const ZSH_HOOK_SNIPPET = `${ZSH_HOOK_MARKER}
-TRAPUSR1() { if [[ -o zle ]]; then zle reset-prompt; fi }`;
+TRAPUSR1() { if [[ -o zle ]]; then zle reset-prompt; fi }
+: > "/tmp/.claude-tools-usr1-$$"`;
 
 function zshrcPath(): string {
     return path.join(process.env.HOME || os.homedir(), ".zshrc");

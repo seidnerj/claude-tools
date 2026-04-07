@@ -1,6 +1,7 @@
 import * as crypto from "node:crypto";
 import * as events from "node:events";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import * as https from "node:https";
@@ -16,6 +17,8 @@ import {
     getKeyMeta,
     storeKeyMeta,
     deleteKeyMeta,
+    hasZshHook,
+    installZshHook,
 } from "../set-key.js";
 
 const tmpDir = vi.hoisted(() => process.cwd() + "/.test-tmp-set-key");
@@ -431,13 +434,27 @@ describe("ensureEnvrc", () => {
         expect(result.created).toBe(true);
         expect(result.appended).toBe(false);
         expect(result.alreadyPresent).toBe(false);
-        expect(fs.readFileSync(envrcPath, "utf-8")).toContain("managed by claude-tools");
+        const content = fs.readFileSync(envrcPath, "utf-8");
+        expect(content).toContain("--- claude-tools begin ---");
+        expect(content).toContain("--- claude-tools end ---");
+        expect(content).toContain("managed by claude-tools");
     });
 
-    it("reports alreadyPresent when current snippet is found", () => {
-        fs.writeFileSync(envrcPath, "# managed by claude-tools\nsome content\n/dev/tty\nfi\n");
+    it("reports alreadyPresent when delimited block matches current snippet", () => {
+        // Write the current format with delimiters
+        ensureEnvrc(tmpDir);
         const result = ensureEnvrc(tmpDir);
         expect(result.alreadyPresent).toBe(true);
+    });
+
+    it("upgrades delimited block when hash differs", () => {
+        fs.writeFileSync(envrcPath, "# --- claude-tools begin ---\n# managed by claude-tools\nold content\nfi\n# --- claude-tools end ---\n");
+        const result = ensureEnvrc(tmpDir);
+        expect(result.upgraded).toBe(true);
+        const content = fs.readFileSync(envrcPath, "utf-8");
+        expect(content).toContain("USR1");
+        expect(content).toContain("--- claude-tools begin ---");
+        expect(content).not.toContain("old content");
     });
 
     it("upgrades previous format (admin creds, no spend limits) to current version", () => {
@@ -445,7 +462,8 @@ describe("ensureEnvrc", () => {
         const result = ensureEnvrc(tmpDir);
         expect(result.upgraded).toBe(true);
         const content = fs.readFileSync(envrcPath, "utf-8");
-        expect(content).toContain("/dev/tty");
+        expect(content).toContain("USR1");
+        expect(content).toContain("--- claude-tools begin ---");
     });
 
     it("upgrades previous format (spend display, no per-directory admin creds) to current version", () => {
@@ -526,6 +544,7 @@ describe("ensureEnvrc", () => {
         expect(result.appended).toBe(true);
         const content = fs.readFileSync(envrcPath, "utf-8");
         expect(content).toContain("export FOO=bar");
+        expect(content).toContain("--- claude-tools begin ---");
         expect(content).toContain("managed by claude-tools");
     });
 });
@@ -624,5 +643,59 @@ describe("key metadata", () => {
         });
         deleteKeyMeta(testDir);
         expect(deleted.some((s) => s.includes(":meta"))).toBe(true);
+    });
+});
+
+describe("zsh hook", () => {
+    let tmpDir: string;
+    let origHome: string;
+
+    beforeEach(() => {
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "zsh-hook-"));
+        origHome = process.env.HOME!;
+        process.env.HOME = tmpDir;
+    });
+
+    afterEach(() => {
+        process.env.HOME = origHome;
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it("returns false when ~/.zshrc does not exist", () => {
+        expect(hasZshHook()).toBe(false);
+    });
+
+    it("returns false when ~/.zshrc exists but has no hook", () => {
+        fs.writeFileSync(path.join(tmpDir, ".zshrc"), "export PATH=/usr/local/bin:$PATH\n");
+        expect(hasZshHook()).toBe(false);
+    });
+
+    it("returns true when ~/.zshrc contains the hook", () => {
+        fs.writeFileSync(path.join(tmpDir, ".zshrc"), "# claude-tools: async prompt redraw\nTRAPUSR1() { }\n");
+        expect(hasZshHook()).toBe(true);
+    });
+
+    it("installs hook to new ~/.zshrc", () => {
+        const result = installZshHook();
+        expect(result.installed).toBe(true);
+        expect(result.alreadyPresent).toBe(false);
+        const content = fs.readFileSync(path.join(tmpDir, ".zshrc"), "utf-8");
+        expect(content).toContain("TRAPUSR1()");
+        expect(content).toContain("zle reset-prompt");
+    });
+
+    it("appends hook to existing ~/.zshrc", () => {
+        fs.writeFileSync(path.join(tmpDir, ".zshrc"), "export FOO=bar\n");
+        installZshHook();
+        const content = fs.readFileSync(path.join(tmpDir, ".zshrc"), "utf-8");
+        expect(content).toContain("export FOO=bar");
+        expect(content).toContain("TRAPUSR1()");
+    });
+
+    it("reports alreadyPresent when hook exists", () => {
+        fs.writeFileSync(path.join(tmpDir, ".zshrc"), "# claude-tools: async prompt redraw\nTRAPUSR1() { }\n");
+        const result = installZshHook();
+        expect(result.installed).toBe(false);
+        expect(result.alreadyPresent).toBe(true);
     });
 });

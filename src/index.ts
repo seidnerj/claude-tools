@@ -44,6 +44,8 @@ export {
     getAdminCreds,
     storeAdminCreds,
     deleteAdminCreds,
+    hasZshHook,
+    installZshHook,
 } from "./set-key.js";
 export {
     checkCommandSafety,

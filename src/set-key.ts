@@ -29,6 +29,7 @@ if [ -n "$_CC_KEY" ]; then
     export ANTHROPIC_API_KEY="$_CC_KEY"
     printf '\\033[36mdirenv: using API key: %s\\033[0m\\n' "$(_cc_resolve_name "$_CC_KEY")" >&2
   fi
+  _CC_SHELL_PID=$(ps -o ppid= -p $PPID 2>/dev/null | tr -d ' ')
   (
     _CC_RESP=$(curl -s https://api.anthropic.com/v1/messages/count_tokens \\
       -H "x-api-key: $_CC_KEY" -H "anthropic-version: 2023-06-01" \\
@@ -36,10 +37,10 @@ if [ -n "$_CC_KEY" ]; then
       -d '{"model":"claude-haiku-4-5-20251001","messages":[{"role":"user","content":"a"}]}')
     case "$_CC_RESP" in
       *'"input_tokens"'*) ;;
-      *"usage limits"*)   printf '\\033[33mdirenv: warning: API key quota exhausted\\033[0m\\n' > /dev/tty ;;
-      *)                  printf '\\033[33mdirenv: warning: API key is invalid\\033[0m\\n' > /dev/tty ;;
+      *"usage limits"*)   printf '\\n\\033[33mdirenv: warning: API key quota exhausted\\033[0m\\n' > /dev/tty; kill -USR1 $_CC_SHELL_PID 2>/dev/null ;;
+      *)                  printf '\\n\\033[33mdirenv: warning: API key is invalid\\033[0m\\n' > /dev/tty; kill -USR1 $_CC_SHELL_PID 2>/dev/null ;;
     esac
-  ) </dev/null &>/dev/null &
+  ) </dev/null &>/dev/null 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
   _CC_ADMIN=$(security find-generic-password -s "Claude Code $(echo -n "$PWD" | base64):admin" -w 2>/dev/null)
   case "$_CC_ADMIN" in
     *:*)
@@ -100,11 +101,12 @@ if [ -n "$_CC_KEY" ]; then
       _CC_WS_STR="n/a" _CC_KEY_STR="n/a"
       [ -n "$_CC_WS_ID" ] && _CC_WS_STR=$(_cc_fmt_cents "$_CC_WS_AMT")
       [ -n "$_CC_KEY_ID" ] && _CC_KEY_STR=$(_cc_fmt_cents "$_CC_KEY_AMT")
-      printf '\\033[36mdirenv: spend - account: %s%s | workspace: %s | key: %s\\033[0m\\n' "$(_cc_fmt_cents "$_CC_ORG_AMT")" "$(_cc_fmt_limit "$_CC_ACCT_LIMIT")" "$_CC_WS_STR" "$_CC_KEY_STR" > /dev/tty
-    ) </dev/null &>/dev/null &
+      printf '\\n\\033[36mdirenv: spend - account: %s%s | workspace: %s | key: %s\\033[0m\\n' "$(_cc_fmt_cents "$_CC_ORG_AMT")" "$(_cc_fmt_limit "$_CC_ACCT_LIMIT")" "$_CC_WS_STR" "$_CC_KEY_STR" > /dev/tty
+      kill -USR1 $_CC_SHELL_PID 2>/dev/null
+    ) </dev/null &>/dev/null 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
     unset _CC_META _CC_KEY_ID _CC_WS_ID
   fi
-  unset _CC_ADMIN _CC_ORG _CC_SK _CC_KEY
+  unset _CC_ADMIN _CC_ORG _CC_SK _CC_KEY _CC_SHELL_PID
   unset -f _cc_resolve_name 2>/dev/null
 fi`;
 
@@ -502,6 +504,24 @@ export function validateKey(apiKey: string): Promise<KeyValidationResult> {
     });
 }
 
+const ENVRC_BEGIN = "# --- claude-tools begin ---";
+const ENVRC_END = "# --- claude-tools end ---";
+
+function snippetHash(snippet: string): string {
+    return crypto.createHash("sha256").update(snippet).digest("hex").slice(0, 16);
+}
+
+function wrappedSnippet(): string {
+    return `${ENVRC_BEGIN}\n${ENVRC_SNIPPET}\n${ENVRC_END}`;
+}
+
+function extractManagedBlock(content: string): string | null {
+    const beginIdx = content.indexOf(ENVRC_BEGIN);
+    const endIdx = content.indexOf(ENVRC_END);
+    if (beginIdx === -1 || endIdx === -1 || endIdx <= beginIdx) return null;
+    return content.slice(beginIdx + ENVRC_BEGIN.length + 1, endIdx).replace(/\n$/, "");
+}
+
 /** Ensure .envrc in a directory contains the keychain lookup snippet. */
 export function ensureEnvrc(directory: string): { created: boolean; appended: boolean; alreadyPresent: boolean; upgraded: boolean } {
     const envrc = path.join(directory, ".envrc");
@@ -509,27 +529,38 @@ export function ensureEnvrc(directory: string): { created: boolean; appended: bo
     if (fs.existsSync(envrc)) {
         const content = fs.readFileSync(envrc, "utf-8");
 
-        // Current format: spend display with limits and per-directory admin credential override
-        if (content.includes("# managed by claude-tools") && content.includes("/dev/tty")) {
-            return { created: false, appended: false, alreadyPresent: true, upgraded: false };
-        }
-
-        // Any older managed format
-        if (content.includes("# managed by claude-tools") || content.includes("Claude Code $ENCODED_DIR")) {
+        // Delimited format: compare hash of managed block against current snippet
+        const managed = extractManagedBlock(content);
+        if (managed !== null) {
+            if (snippetHash(managed) === snippetHash(ENVRC_SNIPPET)) {
+                return { created: false, appended: false, alreadyPresent: true, upgraded: false };
+            }
+            // Hash mismatch: replace the managed block
             removeEnvrcSnippet(directory);
             if (fs.existsSync(envrc)) {
-                fs.appendFileSync(envrc, "\n" + ENVRC_SNIPPET + "\n");
+                fs.appendFileSync(envrc, "\n" + wrappedSnippet() + "\n");
             } else {
-                fs.writeFileSync(envrc, ENVRC_SNIPPET + "\n");
+                fs.writeFileSync(envrc, wrappedSnippet() + "\n");
             }
             return { created: false, appended: false, alreadyPresent: false, upgraded: true };
         }
 
-        fs.appendFileSync(envrc, "\n" + ENVRC_SNIPPET + "\n");
+        // Legacy format (no delimiters): upgrade
+        if (content.includes("# managed by claude-tools") || content.includes("Claude Code $ENCODED_DIR")) {
+            removeEnvrcSnippet(directory);
+            if (fs.existsSync(envrc)) {
+                fs.appendFileSync(envrc, "\n" + wrappedSnippet() + "\n");
+            } else {
+                fs.writeFileSync(envrc, wrappedSnippet() + "\n");
+            }
+            return { created: false, appended: false, alreadyPresent: false, upgraded: true };
+        }
+
+        fs.appendFileSync(envrc, "\n" + wrappedSnippet() + "\n");
         return { created: false, appended: true, alreadyPresent: false, upgraded: false };
     }
 
-    fs.writeFileSync(envrc, ENVRC_SNIPPET + "\n");
+    fs.writeFileSync(envrc, wrappedSnippet() + "\n");
     return { created: true, appended: false, alreadyPresent: false, upgraded: false };
 }
 
@@ -591,16 +622,55 @@ export function pruneOrphanedKeyNames(): number {
     return pruned;
 }
 
+const ZSH_HOOK_MARKER = "# claude-tools: async prompt redraw";
+const ZSH_HOOK_SNIPPET = `${ZSH_HOOK_MARKER}
+TRAPUSR1() { if [[ -o zle ]]; then zle reset-prompt; fi }`;
+
+function zshrcPath(): string {
+    return path.join(process.env.HOME || os.homedir(), ".zshrc");
+}
+
+/**
+ * Check whether the SIGUSR1 prompt-redraw hook is present in ~/.zshrc.
+ */
+export function hasZshHook(): boolean {
+    const zshrc = zshrcPath();
+    if (!fs.existsSync(zshrc)) return false;
+    return fs.readFileSync(zshrc, "utf-8").includes(ZSH_HOOK_MARKER);
+}
+
+/**
+ * Append the SIGUSR1 prompt-redraw hook to ~/.zshrc.
+ * The hook allows background processes (like .envrc async spend display)
+ * to trigger a clean zsh prompt redraw after printing to /dev/tty.
+ */
+export function installZshHook(): { installed: boolean; alreadyPresent: boolean } {
+    if (hasZshHook()) return { installed: false, alreadyPresent: true };
+    const zshrc = zshrcPath();
+    const existing = fs.existsSync(zshrc) ? fs.readFileSync(zshrc, "utf-8") : "";
+    const separator = existing.length > 0 && !existing.endsWith("\n") ? "\n\n" : "\n";
+    fs.appendFileSync(zshrc, `${separator}${ZSH_HOOK_SNIPPET}\n`);
+    return { installed: true, alreadyPresent: false };
+}
+
 /** Remove the keychain lookup snippet from .envrc. */
 export function removeEnvrcSnippet(directory: string): { removed: boolean; fileDeleted: boolean } {
     const envrc = path.join(directory, ".envrc");
     if (!fs.existsSync(envrc)) return { removed: false, fileDeleted: false };
 
     let content = fs.readFileSync(envrc, "utf-8");
-    let cleaned = content
-        .replace(/^# managed by claude-tools$.*?^fi$\n?/ms, "")
-        .replace(/^ENCODED_DIR=\$\(echo -n "\$PWD" \| base64\)$.*?^fi$\n?/ms, "");
-    cleaned = cleaned.replace(/\n{3,}/g, "\n\n").trim();
+
+    // Remove delimited block
+    const beginRe = new RegExp(
+        `^${ENVRC_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n.*?^${ENVRC_END.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n?`,
+        "ms"
+    );
+    content = content.replace(beginRe, "");
+
+    // Remove legacy formats
+    content = content.replace(/^# managed by claude-tools$.*?^fi$\n?/ms, "").replace(/^ENCODED_DIR=\$\(echo -n "\$PWD" \| base64\)$.*?^fi$\n?/ms, "");
+
+    const cleaned = content.replace(/\n{3,}/g, "\n\n").trim();
 
     if (!cleaned) {
         fs.unlinkSync(envrc);

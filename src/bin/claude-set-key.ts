@@ -27,6 +27,8 @@ import {
     getAdminCreds,
     storeAdminCreds,
     deleteAdminCreds,
+    hasZshHook,
+    installZshHook,
 } from "../set-key.js";
 
 /** Label for the "Claude Code" default entry, cross-referencing captured slots. */
@@ -374,6 +376,28 @@ async function main(): Promise<void> {
         // Non-fatal
     }
 
+    const readline = await import("node:readline");
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const ask: AskFn = (q) => new Promise((resolve) => rl.question(q, resolve));
+
+    // Offer to install the zsh SIGUSR1 hook for clean async prompt redraws
+    if (!hasZshHook()) {
+        console.log("The .envrc async spend display writes to the terminal after direnv finishes.");
+        console.log("A small zsh hook (TRAPUSR1) enables clean prompt redraw after the output appears.");
+        console.log("Without it, you'll see a stale prompt line above the spend info until you press Enter.");
+        console.log();
+        const answer = await ask("Add the prompt-redraw hook to ~/.zshrc? (Y/n): ");
+        if (answer.trim().toLowerCase() !== "n") {
+            const result = installZshHook();
+            if (result.installed) {
+                console.log("Hook added to ~/.zshrc. Restart your shell or run: source ~/.zshrc");
+            }
+        } else {
+            console.log("Skipped. You can add it later by running claude-set-key again.");
+        }
+        console.log();
+    }
+
     console.log(`Directory: ${directory}`);
     console.log();
 
@@ -397,10 +421,6 @@ async function main(): Promise<void> {
     }
     options.push({ id: "admin", label: "Set admin credentials (for per-directory spend tracking)" });
     options.push({ id: "prune", label: "Prune orphaned key names" });
-
-    const readline = await import("node:readline");
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    const ask: AskFn = (q) => new Promise((resolve) => rl.question(q, resolve));
 
     let action: string;
 

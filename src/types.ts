@@ -122,12 +122,20 @@ export interface CopyHistoryResult {
     sessionsIndexUpdated: boolean;
     historyFileUpdated: boolean;
     brokenArtifactsCleaned: number;
+    /** Which sessions were copied (undefined = all sessions in the project) */
+    sessionIds?: string[];
+    /** Requested session IDs that were not found in the source project */
+    sessionsNotFound?: string[];
 }
 
 /** Result of deleting history for a path */
 export interface DeleteHistoryResult {
     targetPath: string;
     historyFileUpdated: boolean;
+    /** Which sessions were deleted (undefined = all sessions in the project) */
+    sessionIds?: string[];
+    /** Requested session IDs that were not found in the project */
+    sessionsNotFound?: string[];
 }
 
 /** Result of moving history from one path to another */
@@ -138,6 +146,10 @@ export interface MoveHistoryResult {
     sessionsIndexUpdated: boolean;
     historyFileUpdated: boolean;
     brokenArtifactsCleaned: number;
+    /** Which sessions were moved (undefined = all sessions in the project) */
+    sessionIds?: string[];
+    /** Requested session IDs that were not found in the source project */
+    sessionsNotFound?: string[];
 }
 
 /** Result of renaming a session */

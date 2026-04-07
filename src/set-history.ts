@@ -95,6 +95,88 @@ function removeHistoryEntries(targetPath: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Per-session helpers
+// ---------------------------------------------------------------------------
+
+/** Check which session IDs have .jsonl files in a project directory. */
+function collectSessionFiles(projectDir: string, sessionIds: string[]): { found: string[]; notFound: string[] } {
+    const found: string[] = [];
+    const notFound: string[] = [];
+    for (const id of sessionIds) {
+        const jsonlPath = path.join(projectDir, `${id}.jsonl`);
+        if (fs.existsSync(jsonlPath) && fs.statSync(jsonlPath).isFile()) {
+            found.push(id);
+        } else {
+            notFound.push(id);
+        }
+    }
+    return { found, notFound };
+}
+
+/** Copy specific session files (.jsonl + companion directory) from source to dest. */
+function copySessionFiles(sourceDir: string, destDir: string, sessionIds: string[]): void {
+    fs.mkdirSync(destDir, { recursive: true });
+    for (const id of sessionIds) {
+        const jsonlSrc = path.join(sourceDir, `${id}.jsonl`);
+        const jsonlDst = path.join(destDir, `${id}.jsonl`);
+        fs.copyFileSync(jsonlSrc, jsonlDst);
+
+        const companionSrc = path.join(sourceDir, id);
+        if (fs.existsSync(companionSrc) && fs.statSync(companionSrc).isDirectory()) {
+            fs.cpSync(companionSrc, path.join(destDir, id), { recursive: true });
+        }
+    }
+}
+
+/** Delete specific session files (.jsonl + companion directory) from a project directory. */
+function deleteSessionFiles(projectDir: string, sessionIds: string[]): void {
+    for (const id of sessionIds) {
+        const jsonlPath = path.join(projectDir, `${id}.jsonl`);
+        if (fs.existsSync(jsonlPath)) fs.unlinkSync(jsonlPath);
+
+        const companionDir = path.join(projectDir, id);
+        if (fs.existsSync(companionDir) && fs.statSync(companionDir).isDirectory()) {
+            fs.rmSync(companionDir, { recursive: true });
+        }
+    }
+}
+
+/** Like updateSessionRefs but only processes specific session .jsonl files. */
+async function updateSessionRefsForFiles(projectDir: string, sessionIds: string[], oldPath: string, newPath: string): Promise<number> {
+    let updated = 0;
+    const oldRef = `"${oldPath}"`;
+    const newRef = `"${newPath}"`;
+    const pattern = new RegExp(escapeRegExp(oldRef), "g");
+
+    for (const id of sessionIds) {
+        const filepath = path.join(projectDir, `${id}.jsonl`);
+        if (!fs.existsSync(filepath) || !fs.statSync(filepath).isFile()) continue;
+
+        let content = fs.readFileSync(filepath, "utf-8");
+        if (content.includes(oldRef)) {
+            content = content.replace(pattern, newRef);
+            await preserveMtime(filepath, () => {
+                fs.writeFileSync(filepath, content);
+            });
+            updated++;
+        }
+    }
+    return updated;
+}
+
+/** Ensure a project directory exists under ~/.claude/projects/, creating it with a minimal sessions-index.json if needed. */
+function ensureProjectDir(projectPath: string): string {
+    const dirName = pathToDirname(projectPath);
+    const projectDir = path.join(PROJECTS_DIR, dirName);
+    if (!fs.existsSync(projectDir)) {
+        fs.mkdirSync(projectDir, { recursive: true });
+        const sessionsIndex = path.join(projectDir, "sessions-index.json");
+        fs.writeFileSync(sessionsIndex, JSON.stringify({ version: 1, entries: [], originalPath: projectPath }));
+    }
+    return projectDir;
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -167,11 +249,11 @@ export function cleanBrokenResumeArtifacts(projectDir: string): number {
 
 /** Copy Claude Code history from one project path to another, keeping the source intact.
  *
- * Copies the project directory under ~/.claude/projects/, fixes cwd
- * references in the copy, updates sessions-index.json, and adds entries
- * to the global history.jsonl.
+ * When sessionIds is omitted, copies the entire project directory (all sessions).
+ * When sessionIds is provided, copies only the specified sessions - the destination
+ * project directory may already exist (sessions are merged into it).
  */
-export async function copyHistory(sourcePath: string, destPath: string): Promise<CopyHistoryResult> {
+export async function copyHistory(sourcePath: string, destPath: string, sessionIds?: string[]): Promise<CopyHistoryResult> {
     requireProjectsDir();
 
     sourcePath = path.resolve(sourcePath).replace(/\/+$/, "");
@@ -189,6 +271,35 @@ export async function copyHistory(sourcePath: string, destPath: string): Promise
     if (!isDir(sourceProjectDir)) {
         throw new Error(`No Claude history found for source path: ${sourcePath}`);
     }
+
+    // Per-session copy
+    if (sessionIds) {
+        if (sessionIds.length === 0) {
+            throw new Error("session_ids must contain at least one session ID.");
+        }
+
+        const { found, notFound } = collectSessionFiles(sourceProjectDir, sessionIds);
+
+        ensureProjectDir(destPath);
+        if (found.length > 0) {
+            copySessionFiles(sourceProjectDir, destProjectDir, found);
+        }
+
+        const sessionFilesUpdated = found.length > 0 ? await updateSessionRefsForFiles(destProjectDir, found, sourcePath, destPath) : 0;
+
+        return {
+            sourcePath,
+            destPath,
+            sessionFilesUpdated,
+            sessionsIndexUpdated: false,
+            historyFileUpdated: false,
+            brokenArtifactsCleaned: 0,
+            sessionIds: found,
+            sessionsNotFound: notFound.length > 0 ? notFound : undefined,
+        };
+    }
+
+    // Whole-project copy (existing behavior)
     if (isDir(destProjectDir)) {
         throw new Error(`Claude history already exists for destination path: ${destPath}`);
     }
@@ -212,10 +323,11 @@ export async function copyHistory(sourcePath: string, destPath: string): Promise
 
 /** Delete Claude Code history for a project path.
  *
- * Removes the project directory under ~/.claude/projects/ and cleans up
- * entries from the global history.jsonl.
+ * When sessionIds is omitted, removes the entire project directory and all sessions.
+ * When sessionIds is provided, deletes only the specified sessions - the project
+ * directory and remaining sessions are preserved.
  */
-export async function deleteHistory(targetPath: string): Promise<DeleteHistoryResult> {
+export async function deleteHistory(targetPath: string, sessionIds?: string[]): Promise<DeleteHistoryResult> {
     requireProjectsDir();
 
     targetPath = path.resolve(targetPath).replace(/\/+$/, "");
@@ -227,6 +339,26 @@ export async function deleteHistory(targetPath: string): Promise<DeleteHistoryRe
         throw new Error(`No Claude history found for path: ${targetPath}`);
     }
 
+    // Per-session delete
+    if (sessionIds) {
+        if (sessionIds.length === 0) {
+            throw new Error("session_ids must contain at least one session ID.");
+        }
+
+        const { found, notFound } = collectSessionFiles(projectDir, sessionIds);
+        if (found.length > 0) {
+            deleteSessionFiles(projectDir, found);
+        }
+
+        return {
+            targetPath,
+            historyFileUpdated: false,
+            sessionIds: found,
+            sessionsNotFound: notFound.length > 0 ? notFound : undefined,
+        };
+    }
+
+    // Whole-project delete (existing behavior)
     fs.rmSync(projectDir, { recursive: true });
 
     const historyFileUpdated = removeHistoryEntries(targetPath);
@@ -236,11 +368,11 @@ export async function deleteHistory(targetPath: string): Promise<DeleteHistoryRe
 
 /** Move Claude Code history from one project path to another.
  *
- * Renames the project directory under ~/.claude/projects/, fixes cwd
- * references in session files, updates sessions-index.json, and fixes
- * the global history.jsonl.
+ * When sessionIds is omitted, moves the entire project directory (all sessions).
+ * When sessionIds is provided, moves only the specified sessions - both source and
+ * destination project directories may already exist.
  */
-export async function moveHistory(oldPath: string, newPath: string): Promise<MoveHistoryResult> {
+export async function moveHistory(oldPath: string, newPath: string, sessionIds?: string[]): Promise<MoveHistoryResult> {
     requireProjectsDir();
 
     oldPath = path.resolve(oldPath).replace(/\/+$/, "");
@@ -258,6 +390,36 @@ export async function moveHistory(oldPath: string, newPath: string): Promise<Mov
     const oldExists = isDir(oldProjectDir);
     const newExists = isDir(newProjectDir);
 
+    // Per-session move
+    if (sessionIds) {
+        if (sessionIds.length === 0) {
+            throw new Error("session_ids must contain at least one session ID.");
+        }
+
+        if (!oldExists) {
+            throw new Error(`No Claude history found for source path: ${oldPath}`);
+        }
+
+        const copyResult = await copyHistory(oldPath, newPath, sessionIds);
+
+        const found = copyResult.sessionIds || [];
+        if (found.length > 0) {
+            deleteSessionFiles(oldProjectDir, found);
+        }
+
+        return {
+            oldPath,
+            newPath,
+            sessionFilesUpdated: copyResult.sessionFilesUpdated,
+            sessionsIndexUpdated: false,
+            historyFileUpdated: false,
+            brokenArtifactsCleaned: 0,
+            sessionIds: found,
+            sessionsNotFound: copyResult.sessionsNotFound,
+        };
+    }
+
+    // Whole-project move (existing behavior)
     if (oldExists && newExists) {
         throw new Error("Both old and new project directories exist. Cannot merge automatically.");
     }

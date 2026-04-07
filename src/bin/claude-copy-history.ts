@@ -3,8 +3,9 @@
 // CLI: Copy Claude Code project history to another path (keeping original)
 //
 // Usage:
-//   claude-copy-history                            # interactive (run from destination directory)
-//   claude-copy-history <source-path> <dest-path>  # direct
+//   claude-copy-history                                          # interactive
+//   claude-copy-history <source-path> <dest-path>                # copy all sessions
+//   claude-copy-history -s <uuid> [-s <uuid>] <source> <dest>   # copy specific sessions
 // ---------------------------------------------------------------------------
 
 import * as fs from "node:fs";
@@ -14,8 +15,9 @@ import { requireProjectsDir, listProjectDirs, listSessions, sessionDescription, 
 
 function printUsage(): void {
     console.log("Usage:");
-    console.log("  claude-copy-history                            # interactive (run from destination directory)");
-    console.log("  claude-copy-history <source-path> <dest-path>  # direct");
+    console.log("  claude-copy-history                                          # interactive");
+    console.log("  claude-copy-history <source-path> <dest-path>                # copy all sessions");
+    console.log("  claude-copy-history -s <uuid> [-s <uuid>] <source> <dest>   # copy specific sessions");
 }
 
 function printSessions(projectDir: string): void {
@@ -26,8 +28,54 @@ function printSessions(projectDir: string): void {
     }
     for (const s of sessions) {
         const desc = sessionDescription(s) || "(untitled)";
-        console.log(`    ${desc} (${s.msgCount} msgs, ${s.created.slice(0, 10)} -> ${s.modified.slice(0, 10)})`);
+        console.log(`    ${s.sessionId.slice(0, 8)}  ${desc} (${s.msgCount} msgs, ${s.created.slice(0, 10)} -> ${s.modified.slice(0, 10)})`);
     }
+}
+
+function parseArgs(argv: string[]): { sessionIds: string[]; positional: string[] } {
+    const sessionIds: string[] = [];
+    const positional: string[] = [];
+    let i = 0;
+    while (i < argv.length) {
+        if (argv[i] === "-s" || argv[i] === "--session") {
+            i++;
+            if (i < argv.length) {
+                sessionIds.push(argv[i]);
+            }
+        } else if (!argv[i].startsWith("-")) {
+            positional.push(argv[i]);
+        }
+        i++;
+    }
+    return { sessionIds, positional };
+}
+
+async function pickSessions(projectDir: string, ask: (q: string) => Promise<string>): Promise<string[] | undefined> {
+    const sessions = listSessions(projectDir);
+    if (sessions.length === 0) return undefined;
+
+    console.log();
+    console.log("Sessions in this project:");
+    for (let i = 0; i < sessions.length; i++) {
+        const s = sessions[i];
+        const desc = sessionDescription(s) || "(untitled)";
+        console.log(`  ${i + 1}) ${s.sessionId.slice(0, 8)}  ${desc} (${s.msgCount} msgs)`);
+    }
+    console.log();
+
+    const answer = await ask("Copy which sessions? (comma-separated #s, or 'a' for all): ");
+    if (answer.toLowerCase() === "a" || answer.trim() === "") return undefined;
+
+    const indices = answer.split(",").map((s) => parseInt(s.trim(), 10));
+    const picked: string[] = [];
+    for (const idx of indices) {
+        if (isNaN(idx) || idx < 1 || idx > sessions.length) {
+            console.log(`Invalid choice: ${idx}`);
+            process.exit(1);
+        }
+        picked.push(sessions[idx - 1].sessionId);
+    }
+    return picked.length > 0 ? picked : undefined;
 }
 
 async function main(): Promise<void> {
@@ -42,8 +90,11 @@ async function main(): Promise<void> {
 
     let sourcePath: string;
     let destPath: string;
+    let sessionIds: string[] | undefined;
 
-    if (args.length === 0) {
+    const parsed = parseArgs(args);
+
+    if (parsed.positional.length === 0 && parsed.sessionIds.length === 0) {
         // Interactive mode
         const targetPath = process.cwd();
         const targetDirName = pathToDirname(targetPath);
@@ -96,15 +147,16 @@ async function main(): Promise<void> {
         const ask = (q: string): Promise<string> => new Promise((resolve) => rl.question(q, resolve));
 
         const choice = await ask("Copy which project's history to this directory? (#, or 'q' to quit): ");
-        rl.close();
 
         if (choice.toLowerCase() === "q") {
+            rl.close();
             console.log("Cancelled.");
             process.exit(0);
         }
 
         const choiceIdx = parseInt(choice, 10);
         if (isNaN(choiceIdx) || choiceIdx < 1 || choiceIdx > candidates.length) {
+            rl.close();
             console.log("Invalid choice.");
             process.exit(1);
         }
@@ -112,9 +164,14 @@ async function main(): Promise<void> {
         const selectedDirName = candidates[choiceIdx - 1];
         sourcePath = dirnameToPath(selectedDirName);
         destPath = targetPath;
-    } else if (args.length === 2) {
-        sourcePath = path.resolve(args[0]);
-        destPath = path.resolve(args[1]);
+
+        const selectedProjectDir = path.join(PROJECTS_DIR, selectedDirName);
+        sessionIds = await pickSessions(selectedProjectDir, ask);
+        rl.close();
+    } else if (parsed.positional.length === 2) {
+        sourcePath = path.resolve(parsed.positional[0]);
+        destPath = path.resolve(parsed.positional[1]);
+        sessionIds = parsed.sessionIds.length > 0 ? parsed.sessionIds : undefined;
     } else {
         printUsage();
         process.exit(1);
@@ -122,14 +179,26 @@ async function main(): Promise<void> {
     }
 
     console.log();
-    console.log(`Copying history: ${sourcePath} -> ${destPath}`);
+    if (sessionIds) {
+        console.log(`Copying ${sessionIds.length} session(s): ${sourcePath} -> ${destPath}`);
+    } else {
+        console.log(`Copying all sessions: ${sourcePath} -> ${destPath}`);
+    }
 
-    const result = await copyHistory(sourcePath, destPath);
+    const result = await copyHistory(sourcePath, destPath, sessionIds);
 
     console.log();
     console.log(`Session files updated: ${result.sessionFilesUpdated}`);
-    console.log(`Sessions index updated: ${result.sessionsIndexUpdated}`);
-    console.log(`History file updated: ${result.historyFileUpdated}`);
+    if (result.sessionIds) {
+        console.log(`Sessions copied: ${result.sessionIds.length}`);
+    }
+    if (result.sessionsNotFound && result.sessionsNotFound.length > 0) {
+        console.log(`Sessions not found: ${result.sessionsNotFound.join(", ")}`);
+    }
+    if (!sessionIds) {
+        console.log(`Sessions index updated: ${result.sessionsIndexUpdated}`);
+        console.log(`History file updated: ${result.historyFileUpdated}`);
+    }
     if (result.brokenArtifactsCleaned > 0) {
         console.log(`Broken resume artifacts cleaned: ${result.brokenArtifactsCleaned}`);
     }

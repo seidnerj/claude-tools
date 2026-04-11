@@ -3,7 +3,9 @@
 // ---------------------------------------------------------------------------
 
 import * as fs from "node:fs";
-import type { SessionCost, SessionInfo, ModelUsage } from "./types.js";
+import * as os from "node:os";
+import * as path from "node:path";
+import type { SessionCost, SessionInfo, CodeChanges, ModelUsage } from "./types.js";
 import { findSessionFile } from "./find-session.js";
 import { parseSession, sessionDescription } from "./utils.js";
 
@@ -184,12 +186,43 @@ export function getSessionCost(sessionId: string, projectPath?: string): Session
     return calculateCost(parseSessionEntries(filepath), sessionId, resolvedProject);
 }
 
+// ---------------------------------------------------------------------------
+// Persisted session stats from ~/.claude.json
+// ---------------------------------------------------------------------------
+
+interface PersistedProjectConfig {
+    lastSessionId?: string;
+    lastLinesAdded?: number;
+    lastLinesRemoved?: number;
+}
+
+/** Read persisted code change stats for a session from ~/.claude.json.
+ *  Returns null if no stats are found or if the session ID doesn't match.
+ */
+function getPersistedCodeChanges(sessionId: string, projectPath: string): CodeChanges | null {
+    try {
+        const claudeJsonPath = path.join(os.homedir(), ".claude.json");
+        if (!fs.existsSync(claudeJsonPath)) return null;
+        const config = JSON.parse(fs.readFileSync(claudeJsonPath, "utf-8"));
+        const proj = config.projects?.[projectPath] as PersistedProjectConfig | undefined;
+        if (!proj || proj.lastSessionId !== sessionId) return null;
+        if (proj.lastLinesAdded == null && proj.lastLinesRemoved == null) return null;
+        return {
+            linesAdded: proj.lastLinesAdded ?? 0,
+            linesRemoved: proj.lastLinesRemoved ?? 0,
+        };
+    } catch {
+        return null;
+    }
+}
+
 /** Get complete session information: names, cost, durations, and per-model usage. */
 export function getSessionInfo(sessionId: string, projectPath?: string): SessionInfo {
     const { filepath, projectPath: resolvedProject } = findSessionFile(sessionId, projectPath);
 
     const session = parseSession(filepath);
     const cost = calculateCost(parseSessionEntries(filepath), sessionId, resolvedProject);
+    const codeChanges = getPersistedCodeChanges(sessionId, resolvedProject);
 
     return {
         sessionId,
@@ -208,6 +241,7 @@ export function getSessionInfo(sessionId: string, projectPath?: string): Session
         modified: session.modified,
         totalCost: cost.totalCost,
         durations: cost.durations,
+        codeChanges,
         models: cost.models,
     };
 }

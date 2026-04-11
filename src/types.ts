@@ -387,6 +387,12 @@ export interface SessionNames {
     description: string;
 }
 
+/** Code change statistics */
+export interface CodeChanges {
+    linesAdded: number;
+    linesRemoved: number;
+}
+
 /** Complete session information - names, cost, and stats */
 export interface SessionInfo {
     sessionId: string;
@@ -398,5 +404,6 @@ export interface SessionInfo {
     modified: string;
     totalCost: number;
     durations: SessionDurations;
+    codeChanges: CodeChanges | null;
     models: ModelUsage[];
 }

@@ -110,6 +110,9 @@ export function calculateCost(entries: Array<Record<string, unknown>>, sessionId
     let totalCost = 0;
 
     for (const [model, usage] of usageByModel) {
+        const totalTokens = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+        if (totalTokens === 0) continue;
+
         const pricing = MODEL_PRICING[model];
         let cost = 0;
         if (pricing) {

@@ -3,8 +3,9 @@
 // ---------------------------------------------------------------------------
 
 import * as fs from "node:fs";
-import type { SessionCost, ModelUsage } from "./types.js";
+import type { SessionCost, SessionInfo, ModelUsage } from "./types.js";
 import { findSessionFile } from "./find-session.js";
+import { parseSession, sessionDescription } from "./utils.js";
 
 // ---------------------------------------------------------------------------
 // Pricing table (USD per million tokens)
@@ -62,6 +63,7 @@ interface UsageData {
     output_tokens?: number;
     cache_read_input_tokens?: number;
     cache_creation_input_tokens?: number;
+    server_tool_use?: { web_search_requests?: number };
 }
 
 interface AssistantMessage {
@@ -71,7 +73,7 @@ interface AssistantMessage {
 
 /** Calculate cost from pre-parsed JSONL entries. */
 export function calculateCost(entries: Array<Record<string, unknown>>, sessionId: string, projectPath: string): SessionCost {
-    const usageByModel = new Map<string, { input: number; output: number; cacheRead: number; cacheWrite: number }>();
+    const usageByModel = new Map<string, { input: number; output: number; cacheRead: number; cacheWrite: number; webSearches: number }>();
     let apiDurationMs = 0;
     let firstTimestamp = "";
     let lastTimestamp = "";
@@ -98,11 +100,12 @@ export function calculateCost(entries: Array<Record<string, unknown>>, sessionId
         const modelKey = normalizeModelId(msg.model);
         const usage = msg.usage;
 
-        const existing = usageByModel.get(modelKey) || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+        const existing = usageByModel.get(modelKey) || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, webSearches: 0 };
         existing.input += usage.input_tokens || 0;
         existing.output += usage.output_tokens || 0;
         existing.cacheRead += usage.cache_read_input_tokens || 0;
         existing.cacheWrite += usage.cache_creation_input_tokens || 0;
+        existing.webSearches += usage.server_tool_use?.web_search_requests || 0;
         usageByModel.set(modelKey, existing);
     }
 
@@ -121,7 +124,8 @@ export function calculateCost(entries: Array<Record<string, unknown>>, sessionId
                     usage.output * pricing.outputPerMTok +
                     usage.cacheRead * pricing.cacheReadPerMTok +
                     usage.cacheWrite * pricing.cacheWritePerMTok) /
-                1_000_000;
+                    1_000_000 +
+                usage.webSearches * 0.01;
         }
 
         models.push({
@@ -130,6 +134,7 @@ export function calculateCost(entries: Array<Record<string, unknown>>, sessionId
             outputTokens: usage.output,
             cacheReadTokens: usage.cacheRead,
             cacheWriteTokens: usage.cacheWrite,
+            webSearchRequests: usage.webSearches,
             cost,
         });
 
@@ -157,13 +162,10 @@ export function calculateCost(entries: Array<Record<string, unknown>>, sessionId
 // Public API: calculate cost from session ID
 // ---------------------------------------------------------------------------
 
-/** Calculate the cost breakdown for a session by reading its JSONL file. */
-export function getSessionCost(sessionId: string, projectPath?: string): SessionCost {
-    const { filepath, projectPath: resolvedProject } = findSessionFile(sessionId, projectPath);
-
+/** Parse all entries from a session JSONL file. */
+function parseSessionEntries(filepath: string): Array<Record<string, unknown>> {
     const content = fs.readFileSync(filepath, "utf-8");
     const entries: Array<Record<string, unknown>> = [];
-
     for (const line of content.split("\n")) {
         const trimmed = line.trim();
         if (!trimmed) continue;
@@ -173,6 +175,39 @@ export function getSessionCost(sessionId: string, projectPath?: string): Session
             continue;
         }
     }
+    return entries;
+}
 
-    return calculateCost(entries, sessionId, resolvedProject);
+/** Calculate the cost breakdown for a session by reading its JSONL file. */
+export function getSessionCost(sessionId: string, projectPath?: string): SessionCost {
+    const { filepath, projectPath: resolvedProject } = findSessionFile(sessionId, projectPath);
+    return calculateCost(parseSessionEntries(filepath), sessionId, resolvedProject);
+}
+
+/** Get complete session information: names, cost, durations, and per-model usage. */
+export function getSessionInfo(sessionId: string, projectPath?: string): SessionInfo {
+    const { filepath, projectPath: resolvedProject } = findSessionFile(sessionId, projectPath);
+
+    const session = parseSession(filepath);
+    const cost = calculateCost(parseSessionEntries(filepath), sessionId, resolvedProject);
+
+    return {
+        sessionId,
+        projectPath: resolvedProject,
+        names: {
+            slug: session.slug,
+            agentName: session.agentName,
+            customTitle: session.customTitle,
+            aiTitle: session.aiTitle,
+            summary: session.summary,
+            description: sessionDescription(session),
+        },
+        msgCount: session.msgCount,
+        firstPrompt: session.firstPrompt,
+        created: session.created,
+        modified: session.modified,
+        totalCost: cost.totalCost,
+        durations: cost.durations,
+        models: cost.models,
+    };
 }

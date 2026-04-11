@@ -352,6 +352,7 @@ export interface ModelUsage {
     outputTokens: number;
     cacheReadTokens: number;
     cacheWriteTokens: number;
+    webSearchRequests: number;
     cost: number;
 }
 
@@ -365,6 +366,36 @@ export interface SessionDurations {
 export interface SessionCost {
     sessionId: string;
     projectPath: string;
+    totalCost: number;
+    durations: SessionDurations;
+    models: ModelUsage[];
+}
+
+/** Session naming levels */
+export interface SessionNames {
+    /** Internal three-word identifier (e.g. "crispy-rolling-anchor") */
+    slug: string;
+    /** Name shown in the terminal status bar (e.g. "export-conversation-transcript") */
+    agentName: string;
+    /** User-set or AI-generated custom title */
+    customTitle: string;
+    /** AI-generated title */
+    aiTitle: string;
+    /** Auto-generated summary */
+    summary: string;
+    /** Best available description (customTitle > aiTitle > summary > firstPrompt) */
+    description: string;
+}
+
+/** Complete session information - names, cost, and stats */
+export interface SessionInfo {
+    sessionId: string;
+    projectPath: string;
+    names: SessionNames;
+    msgCount: number;
+    firstPrompt: string;
+    created: string;
+    modified: string;
     totalCost: number;
     durations: SessionDurations;
     models: ModelUsage[];

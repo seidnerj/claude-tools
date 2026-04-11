@@ -136,6 +136,37 @@ describe("parseSession", () => {
         const s = parseSession(filepath);
         expect(s.firstPrompt).toBe("Real prompt");
     });
+
+    it("extracts slug from session entries", () => {
+        const lines = [
+            JSON.stringify({
+                type: "user",
+                timestamp: "2026-01-01T10:00:00Z",
+                message: { content: "Hello" },
+                slug: "calm-painting-feather",
+            }),
+            JSON.stringify({
+                type: "assistant",
+                timestamp: "2026-01-01T10:01:00Z",
+                message: { content: "Hi" },
+                slug: "calm-painting-feather",
+            }),
+        ];
+        const filepath = path.join(tmpDir, "slug-session.jsonl");
+        fs.writeFileSync(filepath, lines.join("\n"));
+
+        const s = parseSession(filepath);
+        expect(s.slug).toBe("calm-painting-feather");
+    });
+
+    it("returns empty slug when no entries have slug field", () => {
+        const lines = [JSON.stringify({ type: "user", timestamp: "2026-01-01T10:00:00Z", message: { content: "Hello" } })];
+        const filepath = path.join(tmpDir, "no-slug.jsonl");
+        fs.writeFileSync(filepath, lines.join("\n"));
+
+        const s = parseSession(filepath);
+        expect(s.slug).toBe("");
+    });
 });
 
 describe("sessionDescription", () => {
@@ -144,6 +175,7 @@ describe("sessionDescription", () => {
             sessionDescription({
                 sessionId: "x",
                 msgCount: 1,
+                slug: "",
                 customTitle: "Custom",
                 aiTitle: "AI",
                 summary: "Sum",
@@ -159,6 +191,7 @@ describe("sessionDescription", () => {
             sessionDescription({
                 sessionId: "x",
                 msgCount: 1,
+                slug: "",
                 customTitle: "",
                 aiTitle: "AI",
                 summary: "Sum",
@@ -174,6 +207,7 @@ describe("sessionDescription", () => {
             sessionDescription({
                 sessionId: "x",
                 msgCount: 1,
+                slug: "",
                 customTitle: "",
                 aiTitle: "",
                 summary: "Sum",
@@ -190,6 +224,7 @@ describe("sessionDescription", () => {
             sessionDescription({
                 sessionId: "x",
                 msgCount: 1,
+                slug: "",
                 customTitle: "",
                 aiTitle: "",
                 summary: "",

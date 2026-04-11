@@ -6,6 +6,7 @@
 export interface Session {
     sessionId: string;
     msgCount: number;
+    slug: string;
     customTitle: string;
     aiTitle: string;
     summary: string;

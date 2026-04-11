@@ -221,6 +221,7 @@ export function parseSession(filepath: string): Session {
     let summary = "";
     let customTitle = "";
     let aiTitle = "";
+    let slug = "";
     let created = "";
     let modified = "";
 
@@ -237,6 +238,10 @@ export function parseSession(filepath: string): Session {
         }
 
         const t = entry.type as string | undefined;
+
+        if (!slug && typeof entry.slug === "string") {
+            slug = entry.slug;
+        }
 
         if (t === "custom-title") {
             customTitle = (entry.customTitle as string) || "";
@@ -268,7 +273,7 @@ export function parseSession(filepath: string): Session {
 
     const sessionId = path.basename(filepath, ".jsonl");
 
-    return { sessionId, msgCount, customTitle, aiTitle, summary, firstPrompt, created, modified };
+    return { sessionId, msgCount, slug, customTitle, aiTitle, summary, firstPrompt, created, modified };
 }
 
 /** Return the best description for a session. */

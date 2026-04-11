@@ -2,7 +2,9 @@
     "author": "seidnerj",
     "bin": {
         "claude-copy-history": "dist/bin/claude-copy-history.js",
+        "claude-export-session": "dist/bin/claude-export-session.js",
         "claude-find-session": "dist/bin/claude-find-session.js",
+        "claude-import-session": "dist/bin/claude-import-session.js",
         "claude-redact-secrets": "dist/bin/claude-redact-secrets.js",
         "claude-set-history": "dist/bin/claude-set-history.js",
         "claude-set-key": "dist/bin/claude-set-key.js",

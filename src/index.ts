@@ -93,4 +93,6 @@ export {
     HISTORY_FILE,
     DEFAULT_MODEL,
 } from "./utils.js";
+export { exportSession, importSession } from "./share-session.js";
+export type { ExportOptions, ExportResult, ImportOptions, ImportResult } from "./share-session.js";
 export type * from "./types.js";

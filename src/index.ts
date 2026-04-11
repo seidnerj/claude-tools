@@ -59,6 +59,7 @@ export {
     shouldDegradeToPrompt,
 } from "./llm-safety-check.js";
 export { getClaudeStatus, parseStatusRss, parseStatusSummary } from "./claude-status.js";
+export { getSessionCost, calculateCost, MODEL_PRICING } from "./session-cost.js";
 export {
     readClaudeConfig,
     writeClaudeConfig,

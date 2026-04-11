@@ -342,3 +342,28 @@ export interface StatusResult {
     /** When the RSS feed was last published (ISO 8601) */
     feedDate: string;
 }
+
+/** Token usage aggregated by model */
+export interface ModelUsage {
+    model: string;
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+    cost: number;
+}
+
+/** Duration statistics for a session */
+export interface SessionDurations {
+    apiDurationMs: number;
+    wallDurationMs: number;
+}
+
+/** Complete cost breakdown for a session */
+export interface SessionCost {
+    sessionId: string;
+    projectPath: string;
+    totalCost: number;
+    durations: SessionDurations;
+    models: ModelUsage[];
+}

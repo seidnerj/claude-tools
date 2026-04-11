@@ -9,6 +9,7 @@ import { execFileSync } from "node:child_process";
 import type { SessionInfo } from "./types.js";
 import { findSessionFile } from "./find-session.js";
 import { getSessionInfo } from "./session-cost.js";
+import { PROJECTS_DIR, pathToDirname, requireProjectsDir } from "./utils.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -178,10 +179,116 @@ export async function exportSession(options: ExportOptions): Promise<ExportResul
 }
 
 // ---------------------------------------------------------------------------
-// Import (stub)
+// Import
 // ---------------------------------------------------------------------------
 
 /** Import a session from a portable .tar.gz archive. */
-export async function importSession(_options: ImportOptions): Promise<ImportResult> {
-    throw new Error("Not implemented");
+export async function importSession(options: ImportOptions): Promise<ImportResult> {
+    requireProjectsDir();
+
+    const { archivePath } = options;
+
+    // Extract tar.gz to temp dir
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-import-"));
+
+    try {
+        execFileSync("tar", ["xzf", archivePath, "-C", tmpDir], {
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        });
+
+        // Find the single top-level directory inside the extracted archive
+        const entries = fs.readdirSync(tmpDir).filter((e) => {
+            return fs.statSync(path.join(tmpDir, e)).isDirectory();
+        });
+        if (entries.length !== 1) {
+            throw new Error("Invalid archive: expected exactly one top-level directory");
+        }
+        const stageDir = path.join(tmpDir, entries[0]);
+
+        // Read and validate manifest
+        const manifestPath = path.join(stageDir, "manifest.json");
+        if (!fs.existsSync(manifestPath)) {
+            throw new Error("Invalid archive: missing manifest.json");
+        }
+
+        let manifest: Manifest;
+        try {
+            manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+        } catch {
+            throw new Error("Invalid archive: malformed manifest.json");
+        }
+
+        if (manifest.version !== 1) {
+            throw new Error(`Unsupported manifest version: ${manifest.version}`);
+        }
+        if (!manifest.sessionId || !manifest.originalProjectPath) {
+            throw new Error("Invalid archive: missing sessionId or originalProjectPath in manifest");
+        }
+
+        const sessionJsonlPath = path.join(stageDir, "session.jsonl");
+        if (!fs.existsSync(sessionJsonlPath)) {
+            throw new Error("Invalid archive: missing session.jsonl");
+        }
+
+        // Determine target path
+        const targetPath = options.projectPath || manifest.originalProjectPath;
+
+        // Compute encoded dir
+        const encodedDir = pathToDirname(targetPath);
+        const projectDir = path.join(PROJECTS_DIR, encodedDir);
+
+        // Conflict check
+        const targetSessionFile = path.join(projectDir, `${manifest.sessionId}.jsonl`);
+        if (fs.existsSync(targetSessionFile)) {
+            throw new Error(`Session ${manifest.sessionId} already exists at ${targetPath}`);
+        }
+
+        // Ensure project dir exists
+        if (!fs.existsSync(projectDir)) {
+            fs.mkdirSync(projectDir, { recursive: true });
+            fs.writeFileSync(path.join(projectDir, "sessions-index.json"), JSON.stringify({}, null, 2));
+        }
+
+        // Copy session.jsonl to the target
+        fs.copyFileSync(sessionJsonlPath, targetSessionFile);
+
+        // Copy subagents/ to companion dir if present
+        const subagentsDir = path.join(stageDir, "subagents");
+        const hasSubagents = fs.existsSync(subagentsDir) && fs.statSync(subagentsDir).isDirectory();
+        if (hasSubagents) {
+            const companionDir = path.join(projectDir, manifest.sessionId);
+            fs.mkdirSync(companionDir, { recursive: true });
+            for (const entry of fs.readdirSync(subagentsDir)) {
+                const src = path.join(subagentsDir, entry);
+                if (fs.statSync(src).isFile()) {
+                    fs.copyFileSync(src, path.join(companionDir, entry));
+                }
+            }
+        }
+
+        // If target path != original path, rewrite all occurrences of the original path
+        let pathsRewritten = false;
+        if (targetPath !== manifest.originalProjectPath) {
+            const content = fs.readFileSync(targetSessionFile, "utf-8");
+            const escaped = manifest.originalProjectPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            const regex = new RegExp(escaped, "g");
+            const rewritten = content.replace(regex, targetPath);
+            if (rewritten !== content) {
+                fs.writeFileSync(targetSessionFile, rewritten);
+                pathsRewritten = true;
+            }
+        }
+
+        return {
+            sessionId: manifest.sessionId,
+            projectPath: targetPath,
+            sessionInfo: manifest.sessionInfo,
+            includesSubagents: hasSubagents,
+            pathsRewritten,
+        };
+    } finally {
+        // Clean up temp dir
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
 }

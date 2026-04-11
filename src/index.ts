@@ -16,7 +16,7 @@ export {
     generateSessionNonce,
 } from "./find-session.js";
 export { getSynonyms, expandWithSynonyms } from "./synonyms.js";
-export { titleProject, titleAllProjects, titleProjectByPath, renameSession, renameSessionSlug } from "./title-sessions.js";
+export { titleProject, titleAllProjects, titleProjectByPath, renameSession, renameSessionAgentName, renameSessionSlug } from "./title-sessions.js";
 export { scanProject, scanAllProjects, scanProjectByPath, requireDetectSecrets } from "./redact-secrets.js";
 export { copyHistory, deleteHistory, moveHistory, cleanBrokenResumeArtifacts } from "./set-history.js";
 export {

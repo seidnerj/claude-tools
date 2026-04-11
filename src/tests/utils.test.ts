@@ -159,6 +159,40 @@ describe("parseSession", () => {
         expect(s.slug).toBe("calm-painting-feather");
     });
 
+    it("extracts agentName from agent-name entries", () => {
+        const lines = [
+            JSON.stringify({ type: "user", timestamp: "2026-01-01T10:00:00Z", message: { content: "Hello" } }),
+            JSON.stringify({ type: "agent-name", agentName: "my-session-name", sessionId: "agent-name-test" }),
+        ];
+        const filepath = path.join(tmpDir, "agent-name-test.jsonl");
+        fs.writeFileSync(filepath, lines.join("\n"));
+
+        const s = parseSession(filepath);
+        expect(s.agentName).toBe("my-session-name");
+    });
+
+    it("uses last agent-name entry when multiple exist", () => {
+        const lines = [
+            JSON.stringify({ type: "user", timestamp: "2026-01-01T10:00:00Z", message: { content: "Hello" } }),
+            JSON.stringify({ type: "agent-name", agentName: "first-name", sessionId: "multi-name" }),
+            JSON.stringify({ type: "agent-name", agentName: "second-name", sessionId: "multi-name" }),
+        ];
+        const filepath = path.join(tmpDir, "multi-name.jsonl");
+        fs.writeFileSync(filepath, lines.join("\n"));
+
+        const s = parseSession(filepath);
+        expect(s.agentName).toBe("second-name");
+    });
+
+    it("returns empty agentName when no agent-name entries exist", () => {
+        const lines = [JSON.stringify({ type: "user", timestamp: "2026-01-01T10:00:00Z", message: { content: "Hello" } })];
+        const filepath = path.join(tmpDir, "no-agent-name.jsonl");
+        fs.writeFileSync(filepath, lines.join("\n"));
+
+        const s = parseSession(filepath);
+        expect(s.agentName).toBe("");
+    });
+
     it("returns empty slug when no entries have slug field", () => {
         const lines = [JSON.stringify({ type: "user", timestamp: "2026-01-01T10:00:00Z", message: { content: "Hello" } })];
         const filepath = path.join(tmpDir, "no-slug.jsonl");
@@ -176,6 +210,7 @@ describe("sessionDescription", () => {
                 sessionId: "x",
                 msgCount: 1,
                 slug: "",
+                agentName: "",
                 customTitle: "Custom",
                 aiTitle: "AI",
                 summary: "Sum",
@@ -192,6 +227,7 @@ describe("sessionDescription", () => {
                 sessionId: "x",
                 msgCount: 1,
                 slug: "",
+                agentName: "",
                 customTitle: "",
                 aiTitle: "AI",
                 summary: "Sum",
@@ -208,6 +244,7 @@ describe("sessionDescription", () => {
                 sessionId: "x",
                 msgCount: 1,
                 slug: "",
+                agentName: "",
                 customTitle: "",
                 aiTitle: "",
                 summary: "Sum",
@@ -225,6 +262,7 @@ describe("sessionDescription", () => {
                 sessionId: "x",
                 msgCount: 1,
                 slug: "",
+                agentName: "",
                 customTitle: "",
                 aiTitle: "",
                 summary: "",

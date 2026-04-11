@@ -7,6 +7,7 @@ export interface Session {
     sessionId: string;
     msgCount: number;
     slug: string;
+    agentName: string;
     customTitle: string;
     aiTitle: string;
     summary: string;
@@ -162,6 +163,7 @@ export interface RenameResult {
     sessionId: string;
     newTitle?: string;
     newSlug?: string;
+    newAgentName?: string;
     projectPath: string;
 }
 

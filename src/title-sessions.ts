@@ -147,6 +147,21 @@ export async function renameSession(sessionId: string, newTitle: string, project
     return { sessionId, newTitle, projectPath: resolvedProject };
 }
 
+/** Rename the agent name (banner/status bar name) of a session.
+ *
+ * The agent name is shown in the status bar at the bottom of the terminal
+ * (e.g. "export-conversation-transcript"). Like custom titles, it's appended
+ * as a new entry - the last agent-name entry wins.
+ */
+export async function renameSessionAgentName(sessionId: string, newAgentName: string, projectPath?: string): Promise<RenameResult> {
+    const { filepath, projectPath: resolvedProject } = findSessionFile(sessionId, projectPath);
+    const entry = JSON.stringify({ type: "agent-name", sessionId, agentName: newAgentName });
+    await preserveMtime(filepath, () => {
+        fs.appendFileSync(filepath, entry + "\n");
+    });
+    return { sessionId, newAgentName, projectPath: resolvedProject };
+}
+
 /** Rename the slug (banner identifier) of a session.
  *
  * Unlike custom titles which are appended as new entries, slugs must be

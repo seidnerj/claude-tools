@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { searchProject, generateSessionNonce } from "../find-session.js";
+import { searchProject, generateSessionNonce, extractMessageContent } from "../find-session.js";
 
 const tmpDir = path.join(process.cwd(), ".test-tmp-find");
 
@@ -107,5 +107,153 @@ describe("generateSessionNonce", () => {
     it("starts with the probe prefix", () => {
         const nonce = generateSessionNonce();
         expect(nonce).toMatch(/^__session_probe_.+__$/);
+    });
+});
+
+describe("extractMessageContent", () => {
+    it("extracts string content from user messages", () => {
+        const entry = {
+            type: "user",
+            message: { role: "user", content: "Hello world" },
+        };
+        expect(extractMessageContent(entry)).toBe("Hello world");
+    });
+
+    it("extracts text blocks from assistant messages", () => {
+        const entry = {
+            type: "assistant",
+            message: {
+                role: "assistant",
+                content: [{ type: "text", text: "Here is the answer." }],
+            },
+        };
+        expect(extractMessageContent(entry)).toBe("Here is the answer.");
+    });
+
+    it("extracts content from tool_result blocks (string content)", () => {
+        const entry = {
+            type: "user",
+            message: {
+                role: "user",
+                content: [
+                    {
+                        tool_use_id: "toolu_123",
+                        type: "tool_result",
+                        content: "File contents here",
+                    },
+                ],
+            },
+        };
+        expect(extractMessageContent(entry)).toContain("File contents here");
+    });
+
+    it("extracts content from tool_result blocks (nested array content)", () => {
+        const entry = {
+            type: "user",
+            message: {
+                role: "user",
+                content: [
+                    {
+                        tool_use_id: "toolu_456",
+                        type: "tool_result",
+                        content: [{ type: "text", text: "Nested text" }],
+                    },
+                ],
+            },
+        };
+        expect(extractMessageContent(entry)).toContain("Nested text");
+    });
+
+    it("extracts tool name and input from tool_use blocks", () => {
+        const entry = {
+            type: "assistant",
+            message: {
+                role: "assistant",
+                content: [
+                    {
+                        type: "tool_use",
+                        id: "toolu_789",
+                        name: "Read",
+                        input: { file_path: "/tmp/test.ts" },
+                    },
+                ],
+            },
+        };
+        const result = extractMessageContent(entry);
+        expect(result).toContain("Read");
+        expect(result).toContain("/tmp/test.ts");
+    });
+
+    it("combines text and tool_use blocks", () => {
+        const entry = {
+            type: "assistant",
+            message: {
+                role: "assistant",
+                content: [
+                    { type: "text", text: "Let me read the file." },
+                    {
+                        type: "tool_use",
+                        id: "toolu_abc",
+                        name: "Read",
+                        input: { file_path: "/tmp/foo.ts" },
+                    },
+                ],
+            },
+        };
+        const result = extractMessageContent(entry);
+        expect(result).toContain("Let me read the file.");
+        expect(result).toContain("Read");
+    });
+
+    it("extracts thinking content", () => {
+        const entry = {
+            type: "assistant",
+            message: {
+                role: "assistant",
+                content: [
+                    { type: "thinking", thinking: "Let me analyze..." },
+                    { type: "text", text: "Answer." },
+                ],
+            },
+        };
+        const result = extractMessageContent(entry);
+        expect(result).toContain("Let me analyze...");
+        expect(result).toContain("Answer.");
+    });
+
+    it("returns empty for permission-mode entries", () => {
+        expect(extractMessageContent({ type: "permission-mode" })).toBe("");
+    });
+
+    it("returns empty for file-history-snapshot entries", () => {
+        expect(extractMessageContent({ type: "file-history-snapshot", snapshot: {} })).toBe("");
+    });
+
+    it("extracts summary entries", () => {
+        expect(extractMessageContent({ type: "summary", summary: "Session summary text" })).toBe("Session summary text");
+    });
+
+    it("extracts custom-title entries", () => {
+        expect(extractMessageContent({ type: "custom-title", customTitle: "My Title" })).toBe("My Title");
+    });
+
+    it("truncates long tool_use input values", () => {
+        const entry = {
+            type: "assistant",
+            message: {
+                role: "assistant",
+                content: [
+                    {
+                        type: "tool_use",
+                        id: "toolu_long",
+                        name: "Write",
+                        input: { content: "x".repeat(300) },
+                    },
+                ],
+            },
+        };
+        const result = extractMessageContent(entry);
+        expect(result.length).toBeLessThan(300);
+        expect(result).toContain("...");
     });
 });

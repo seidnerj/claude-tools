@@ -64,7 +64,7 @@ export function findSessionFile(sessionId: string, projectPath?: string): { file
 // Read session messages
 // ---------------------------------------------------------------------------
 
-function extractMessageContent(entry: Record<string, unknown>): string {
+export function extractMessageContent(entry: Record<string, unknown>): string {
     const t = entry.type as string | undefined;
 
     if (t === "user" || t === "assistant") {
@@ -75,8 +75,40 @@ function extractMessageContent(entry: Record<string, unknown>): string {
             return c
                 .map((block: unknown) => {
                     if (typeof block === "string") return block;
-                    if (block && typeof block === "object" && "text" in block) {
-                        return (block as { text: string }).text;
+                    if (!block || typeof block !== "object") return "";
+                    const b = block as Record<string, unknown>;
+
+                    if (b.type === "text" && typeof b.text === "string") {
+                        return b.text;
+                    }
+                    if (b.type === "thinking" && typeof b.thinking === "string") {
+                        return b.thinking;
+                    }
+                    if (b.type === "tool_result") {
+                        if (typeof b.content === "string") return b.content;
+                        if (Array.isArray(b.content)) {
+                            return (b.content as Array<Record<string, unknown>>)
+                                .filter((inner) => inner.type === "text" && typeof inner.text === "string")
+                                .map((inner) => inner.text as string)
+                                .join("\n");
+                        }
+                        return "";
+                    }
+                    if (b.type === "tool_use") {
+                        const name = (b.name as string) || "unknown_tool";
+                        const input = b.input;
+                        let inputSummary = "";
+                        if (input && typeof input === "object") {
+                            const entries = Object.entries(input as Record<string, unknown>);
+                            inputSummary = entries
+                                .map(([k, v]) => {
+                                    const val = typeof v === "string" ? v : JSON.stringify(v);
+                                    const truncated = val.length > 200 ? val.slice(0, 197) + "..." : val;
+                                    return `${k}: ${truncated}`;
+                                })
+                                .join(", ");
+                        }
+                        return inputSummary ? `[${name}: ${inputSummary}]` : `[${name}]`;
                     }
                     return "";
                 })

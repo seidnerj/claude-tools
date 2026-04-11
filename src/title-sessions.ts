@@ -146,3 +146,34 @@ export async function renameSession(sessionId: string, newTitle: string, project
     });
     return { sessionId, newTitle, projectPath: resolvedProject };
 }
+
+/** Rename the slug (banner identifier) of a session.
+ *
+ * Unlike custom titles which are appended as new entries, slugs must be
+ * rewritten across all entries in the file since they're stored on each entry.
+ */
+export async function renameSessionSlug(sessionId: string, newSlug: string, projectPath?: string): Promise<RenameResult> {
+    const { filepath, projectPath: resolvedProject } = findSessionFile(sessionId, projectPath);
+
+    await preserveMtime(filepath, () => {
+        const content = fs.readFileSync(filepath, "utf-8");
+        const lines = content.split("\n");
+        const rewritten = lines.map((line) => {
+            const trimmed = line.trim();
+            if (!trimmed) return line;
+            try {
+                const entry = JSON.parse(trimmed);
+                if (typeof entry.slug === "string") {
+                    entry.slug = newSlug;
+                    return JSON.stringify(entry);
+                }
+                return line;
+            } catch {
+                return line;
+            }
+        });
+        fs.writeFileSync(filepath, rewritten.join("\n"));
+    });
+
+    return { sessionId, newSlug, projectPath: resolvedProject };
+}

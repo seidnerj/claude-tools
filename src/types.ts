@@ -160,7 +160,8 @@ export interface MoveHistoryResult {
 /** Result of renaming a session */
 export interface RenameResult {
     sessionId: string;
-    newTitle: string;
+    newTitle?: string;
+    newSlug?: string;
     projectPath: string;
 }
 

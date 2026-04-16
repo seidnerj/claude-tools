@@ -407,3 +407,63 @@ export interface SessionInfo {
     codeChanges: CodeChanges | null;
     models: ModelUsage[];
 }
+
+/** A single changelog entry (one bullet point) */
+export interface ChangelogEntry {
+    /** Category inferred from leading verb: Added, Fixed, Improved, Changed, Removed, Security, Other */
+    category: string;
+    /** The full entry text (markdown preserved) */
+    text: string;
+}
+
+/** A single version's changelog */
+export interface ChangelogVersion {
+    /** Semver version string, e.g. "2.1.110" */
+    version: string;
+    /** All entries for this version */
+    entries: ChangelogEntry[];
+}
+
+/** The full parsed changelog */
+export interface Changelog {
+    /** All versions, sorted newest-first (as in the source document) */
+    versions: ChangelogVersion[];
+}
+
+/** Result of comparing two versions */
+export interface ChangelogDiff {
+    /** The lower bound (exclusive), or "" if unbounded */
+    fromVersion: string;
+    /** The upper bound (inclusive), or "" if unbounded */
+    toVersion: string;
+    /** Per-version breakdown, ordered oldest to newest */
+    versions: ChangelogVersion[];
+    /** Entries merged by category across all included versions */
+    merged: Record<string, string[]>;
+}
+
+/** A single search hit in the changelog */
+export interface ChangelogSearchHit {
+    /** Version containing the match */
+    version: string;
+    /** Category of the matching entry */
+    category: string;
+    /** Full text of the matching entry */
+    text: string;
+}
+
+/** Result of searching the changelog */
+export interface ChangelogSearchResult {
+    /** The original search query */
+    query: string;
+    /** All matching entries */
+    hits: ChangelogSearchHit[];
+}
+
+/** Result of looking up a single version */
+export interface ChangelogVersionResult {
+    /** The version that was looked up */
+    version: string;
+    /** All entries for that version */
+    entries: ChangelogEntry[];
+}

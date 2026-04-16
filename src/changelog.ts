@@ -85,3 +85,14 @@ export function parseChangelog(markdown: string): Changelog {
 
     return { versions };
 }
+
+// ---------------------------------------------------------------------------
+// Version lookup
+// ---------------------------------------------------------------------------
+
+/** Get entries for a specific version. Returns null if not found. */
+export function getVersion(changelog: Changelog, version: string): ChangelogVersionResult | null {
+    const found = changelog.versions.find((v) => v.version === version);
+    if (!found) return null;
+    return { version: found.version, entries: found.entries };
+}

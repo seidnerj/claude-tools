@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseChangelog } from "../changelog.js";
+import { parseChangelog, getVersion } from "../changelog.js";
 
 // ---------------------------------------------------------------------------
 // Sample data
@@ -100,5 +100,30 @@ describe("parseChangelog", () => {
         expect(result.versions).toHaveLength(2);
         expect(result.versions[0].entries).toHaveLength(0);
         expect(result.versions[1].entries).toHaveLength(1);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// getVersion
+// ---------------------------------------------------------------------------
+
+describe("getVersion", () => {
+    const changelog = parseChangelog(SAMPLE_CHANGELOG);
+
+    it("returns entries for an existing version", () => {
+        const result = getVersion(changelog, "2.1.110");
+        expect(result).not.toBeNull();
+        expect(result!.version).toBe("2.1.110");
+        expect(result!.entries).toHaveLength(4);
+    });
+
+    it("returns null for a non-existent version", () => {
+        const result = getVersion(changelog, "9.9.9");
+        expect(result).toBeNull();
+    });
+
+    it("matches version string exactly", () => {
+        const result = getVersion(changelog, "2.1.11");
+        expect(result).toBeNull();
     });
 });

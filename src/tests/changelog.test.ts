@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseChangelog, getVersion } from "../changelog.js";
+import { parseChangelog, getVersion, diffVersions } from "../changelog.js";
 
 // ---------------------------------------------------------------------------
 // Sample data
@@ -125,5 +125,73 @@ describe("getVersion", () => {
     it("matches version string exactly", () => {
         const result = getVersion(changelog, "2.1.11");
         expect(result).toBeNull();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// diffVersions
+// ---------------------------------------------------------------------------
+
+describe("diffVersions", () => {
+    const changelog = parseChangelog(SAMPLE_CHANGELOG);
+
+    it("returns versions between fromVersion (exclusive) and toVersion (inclusive)", () => {
+        const result = diffVersions(changelog, { fromVersion: "2.1.109", toVersion: "2.1.111" });
+        expect(result.fromVersion).toBe("2.1.109");
+        expect(result.toVersion).toBe("2.1.111");
+        expect(result.versions.map((v) => v.version)).toEqual(["2.1.110", "2.1.111"]);
+    });
+
+    it("orders versions oldest to newest", () => {
+        const result = diffVersions(changelog, { fromVersion: "2.1.107", toVersion: "2.1.111" });
+        const versions = result.versions.map((v) => v.version);
+        expect(versions).toEqual(["2.1.109", "2.1.110", "2.1.111"]);
+    });
+
+    it("builds merged categories", () => {
+        const result = diffVersions(changelog, { fromVersion: "2.1.109", toVersion: "2.1.111" });
+        expect(result.merged["Added"]).toBeDefined();
+        expect(result.merged["Fixed"]).toBeDefined();
+        const allAdded = result.merged["Added"];
+        expect(allAdded.length).toBeGreaterThan(0);
+    });
+
+    it("treats omitted toVersion as latest", () => {
+        const result = diffVersions(changelog, { fromVersion: "2.1.110" });
+        expect(result.toVersion).toBe("2.1.111");
+        expect(result.versions.map((v) => v.version)).toEqual(["2.1.111"]);
+    });
+
+    it("treats omitted fromVersion as everything up to toVersion", () => {
+        const result = diffVersions(changelog, { toVersion: "2.1.109" });
+        expect(result.fromVersion).toBe("");
+        expect(result.versions.map((v) => v.version)).toEqual(["2.1.107", "2.1.109"]);
+    });
+
+    it("returns all versions when no options provided", () => {
+        const result = diffVersions(changelog);
+        expect(result.versions).toHaveLength(4);
+        expect(result.versions[0].version).toBe("2.1.107");
+        expect(result.versions[3].version).toBe("2.1.111");
+    });
+
+    it("throws when fromVersion is not found", () => {
+        expect(() => diffVersions(changelog, { fromVersion: "9.9.9" })).toThrow("not found");
+    });
+
+    it("throws when toVersion is not found", () => {
+        expect(() => diffVersions(changelog, { toVersion: "9.9.9" })).toThrow("not found");
+    });
+
+    it("returns empty when fromVersion equals toVersion", () => {
+        const result = diffVersions(changelog, { fromVersion: "2.1.110", toVersion: "2.1.110" });
+        expect(result.versions).toHaveLength(0);
+    });
+
+    it("handles reversed version order by swapping them", () => {
+        const result = diffVersions(changelog, { fromVersion: "2.1.111", toVersion: "2.1.109" });
+        expect(result.fromVersion).toBe("2.1.109");
+        expect(result.toVersion).toBe("2.1.111");
+        expect(result.versions.map((v) => v.version)).toEqual(["2.1.110", "2.1.111"]);
     });
 });

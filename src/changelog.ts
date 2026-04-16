@@ -96,3 +96,50 @@ export function getVersion(changelog: Changelog, version: string): ChangelogVers
     if (!found) return null;
     return { version: found.version, entries: found.entries };
 }
+
+// ---------------------------------------------------------------------------
+// Version diff
+// ---------------------------------------------------------------------------
+
+/** Get all changes between two versions. fromVersion is exclusive, toVersion is inclusive. */
+export function diffVersions(changelog: Changelog, options?: { fromVersion?: string; toVersion?: string }): ChangelogDiff {
+    let fromVersion = options?.fromVersion ?? "";
+    let toVersion = options?.toVersion ?? "";
+
+    if (fromVersion && !changelog.versions.some((v) => v.version === fromVersion)) {
+        throw new Error(`Version "${fromVersion}" not found in changelog`);
+    }
+    if (toVersion && !changelog.versions.some((v) => v.version === toVersion)) {
+        throw new Error(`Version "${toVersion}" not found in changelog`);
+    }
+
+    // Swap if reversed
+    if (fromVersion && toVersion && compareSemver(fromVersion, toVersion) > 0) {
+        [fromVersion, toVersion] = [toVersion, fromVersion];
+    }
+
+    // Default toVersion to the latest
+    if (!toVersion && fromVersion) {
+        toVersion = changelog.versions[0].version;
+    }
+
+    // Filter to versions in range, then sort oldest-first
+    const inRange = changelog.versions.filter((v) => {
+        if (fromVersion && compareSemver(v.version, fromVersion) <= 0) return false;
+        if (toVersion && compareSemver(v.version, toVersion) > 0) return false;
+        return true;
+    });
+
+    const sorted = [...inRange].sort((a, b) => compareSemver(a.version, b.version));
+
+    // Build merged categories
+    const merged: Record<string, string[]> = {};
+    for (const ver of sorted) {
+        for (const entry of ver.entries) {
+            if (!merged[entry.category]) merged[entry.category] = [];
+            merged[entry.category].push(entry.text);
+        }
+    }
+
+    return { fromVersion, toVersion, versions: sorted, merged };
+}

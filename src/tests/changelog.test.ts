@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { parseChangelog, getVersion, diffVersions, searchChangelog, fetchChangelog } from "../changelog.js";
+import { parseChangelog, getVersion, diffVersions, searchChangelog, fetchChangelog, compareSemver } from "../changelog.js";
 
 // ---------------------------------------------------------------------------
 // Sample data
@@ -266,5 +266,36 @@ describe("fetchChangelog", () => {
     it("throws on network error", async () => {
         vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("Network unreachable")));
         await expect(fetchChangelog()).rejects.toThrow("Network unreachable");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// compareSemver
+// ---------------------------------------------------------------------------
+
+describe("compareSemver", () => {
+    it("returns 0 for equal versions", () => {
+        expect(compareSemver("2.1.110", "2.1.110")).toBe(0);
+    });
+
+    it("returns negative when a < b", () => {
+        expect(compareSemver("2.1.109", "2.1.110")).toBeLessThan(0);
+    });
+
+    it("returns positive when a > b", () => {
+        expect(compareSemver("2.1.111", "2.1.110")).toBeGreaterThan(0);
+    });
+
+    it("compares major versions", () => {
+        expect(compareSemver("1.0.0", "2.0.0")).toBeLessThan(0);
+    });
+
+    it("compares minor versions", () => {
+        expect(compareSemver("2.0.0", "2.1.0")).toBeLessThan(0);
+    });
+
+    it("handles different segment lengths", () => {
+        expect(compareSemver("2.1", "2.1.0")).toBe(0);
+        expect(compareSemver("2.1", "2.1.1")).toBeLessThan(0);
     });
 });

@@ -31,7 +31,7 @@ const CATEGORY_PREFIXES: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 /** Compare two dotted semver strings numerically. Returns <0, 0, or >0. */
-function compareSemver(a: string, b: string): number {
+export function compareSemver(a: string, b: string): number {
     const pa = a.split(".").map(Number);
     const pb = b.split(".").map(Number);
     const len = Math.max(pa.length, pb.length);

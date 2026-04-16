@@ -95,4 +95,5 @@ export {
 } from "./utils.js";
 export { exportSession, importSession } from "./share-session.js";
 export type { ExportOptions, ExportResult, ImportOptions, ImportResult } from "./share-session.js";
+export { parseChangelog, getVersion, diffVersions, searchChangelog, fetchChangelog, compareSemver } from "./changelog.js";
 export type * from "./types.js";

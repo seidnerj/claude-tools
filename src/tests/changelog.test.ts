@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseChangelog, getVersion, diffVersions } from "../changelog.js";
+import { parseChangelog, getVersion, diffVersions, searchChangelog } from "../changelog.js";
 
 // ---------------------------------------------------------------------------
 // Sample data
@@ -193,5 +193,51 @@ describe("diffVersions", () => {
         expect(result.fromVersion).toBe("2.1.109");
         expect(result.toVersion).toBe("2.1.111");
         expect(result.versions.map((v) => v.version)).toEqual(["2.1.110", "2.1.111"]);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// searchChangelog
+// ---------------------------------------------------------------------------
+
+describe("searchChangelog", () => {
+    const changelog = parseChangelog(SAMPLE_CHANGELOG);
+
+    it("finds entries matching a substring (case-insensitive)", () => {
+        const result = searchChangelog(changelog, "mcp");
+        expect(result.query).toBe("mcp");
+        expect(result.hits.length).toBeGreaterThan(0);
+        expect(result.hits.every((h) => h.text.toLowerCase().includes("mcp"))).toBe(true);
+    });
+
+    it("returns version and category for each hit", () => {
+        const result = searchChangelog(changelog, "plugin");
+        expect(result.hits.length).toBeGreaterThan(0);
+        for (const hit of result.hits) {
+            expect(hit.version).toBeTruthy();
+            expect(hit.category).toBeTruthy();
+            expect(hit.text).toBeTruthy();
+        }
+    });
+
+    it("returns empty hits when nothing matches", () => {
+        const result = searchChangelog(changelog, "xyznonexistent");
+        expect(result.hits).toHaveLength(0);
+    });
+
+    it("supports regex search", () => {
+        const result = searchChangelog(changelog, "Ctrl\\+[A-Z]", { regex: true });
+        expect(result.hits.length).toBeGreaterThan(0);
+    });
+
+    it("handles invalid regex gracefully by treating it as literal", () => {
+        const result = searchChangelog(changelog, "[invalid(regex");
+        expect(result.hits).toHaveLength(0);
+    });
+
+    it("matches across multiple versions", () => {
+        const result = searchChangelog(changelog, "improved");
+        const versions = new Set(result.hits.map((h) => h.version));
+        expect(versions.size).toBeGreaterThan(1);
     });
 });

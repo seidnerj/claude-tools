@@ -143,3 +143,35 @@ export function diffVersions(changelog: Changelog, options?: { fromVersion?: str
 
     return { fromVersion, toVersion, versions: sorted, merged };
 }
+
+// ---------------------------------------------------------------------------
+// Search
+// ---------------------------------------------------------------------------
+
+/** Search changelog entries by keyword or regex. Case-insensitive. */
+export function searchChangelog(changelog: Changelog, query: string, options?: { regex?: boolean }): ChangelogSearchResult {
+    const hits: ChangelogSearchHit[] = [];
+
+    let matcher: (text: string) => boolean;
+    if (options?.regex) {
+        try {
+            const re = new RegExp(query, "i");
+            matcher = (text) => re.test(text);
+        } catch {
+            matcher = (text) => text.toLowerCase().includes(query.toLowerCase());
+        }
+    } else {
+        const lowerQuery = query.toLowerCase();
+        matcher = (text) => text.toLowerCase().includes(lowerQuery);
+    }
+
+    for (const ver of changelog.versions) {
+        for (const entry of ver.entries) {
+            if (matcher(entry.text)) {
+                hits.push({ version: ver.version, category: entry.category, text: entry.text });
+            }
+        }
+    }
+
+    return { query, hits };
+}

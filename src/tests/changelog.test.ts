@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { parseChangelog, getVersion, diffVersions, searchChangelog } from "../changelog.js";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { parseChangelog, getVersion, diffVersions, searchChangelog, fetchChangelog } from "../changelog.js";
 
 // ---------------------------------------------------------------------------
 // Sample data
@@ -239,5 +239,32 @@ describe("searchChangelog", () => {
         const result = searchChangelog(changelog, "improved");
         const versions = new Set(result.hits.map((h) => h.version));
         expect(versions.size).toBeGreaterThan(1);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// fetchChangelog
+// ---------------------------------------------------------------------------
+
+describe("fetchChangelog", () => {
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it("fetches and parses the changelog from GitHub", async () => {
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, text: () => Promise.resolve(SAMPLE_CHANGELOG) }));
+        const result = await fetchChangelog();
+        expect(result.versions).toHaveLength(4);
+        expect(fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("throws on HTTP error", async () => {
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 404 }));
+        await expect(fetchChangelog()).rejects.toThrow("Failed to fetch changelog");
+    });
+
+    it("throws on network error", async () => {
+        vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("Network unreachable")));
+        await expect(fetchChangelog()).rejects.toThrow("Network unreachable");
     });
 });

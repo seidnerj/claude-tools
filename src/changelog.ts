@@ -175,3 +175,15 @@ export function searchChangelog(changelog: Changelog, query: string, options?: {
 
     return { query, hits };
 }
+
+// ---------------------------------------------------------------------------
+// Convenience fetcher
+// ---------------------------------------------------------------------------
+
+/** Fetch the Claude Code changelog from GitHub and parse it. */
+export async function fetchChangelog(): Promise<Changelog> {
+    const resp = await fetch(CHANGELOG_URL);
+    if (!resp.ok) throw new Error(`Failed to fetch changelog: HTTP ${resp.status}`);
+    const markdown = await resp.text();
+    return parseChangelog(markdown);
+}

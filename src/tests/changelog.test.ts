@@ -231,7 +231,7 @@ describe("searchChangelog", () => {
     });
 
     it("handles invalid regex gracefully by treating it as literal", () => {
-        const result = searchChangelog(changelog, "[invalid(regex");
+        const result = searchChangelog(changelog, "[invalid(regex", { regex: true });
         expect(result.hits).toHaveLength(0);
     });
 

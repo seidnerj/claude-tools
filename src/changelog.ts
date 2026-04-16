@@ -119,7 +119,7 @@ export function diffVersions(changelog: Changelog, options?: { fromVersion?: str
     }
 
     // Default toVersion to the latest
-    if (!toVersion && fromVersion) {
+    if (!toVersion && fromVersion && changelog.versions.length > 0) {
         toVersion = changelog.versions[0].version;
     }
 

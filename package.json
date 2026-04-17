@@ -12,6 +12,9 @@
         "claude-title-sessions": "dist/bin/claude-title-sessions.js",
         "llm-safety-check": "dist/bin/llm-safety-check.js"
     },
+    "bugs": {
+        "url": "https://github.com/seidnerj/claude-tools/issues"
+    },
     "dependencies": {},
     "description": "TypeScript library for managing Claude Code session history, secrets, API keys, and more",
     "devDependencies": {
@@ -36,6 +39,12 @@
         },
         "./tsconfig.json": "./tsconfig.json"
     },
+    "files": [
+        "dist",
+        "README.md",
+        "LICENSE"
+    ],
+    "homepage": "https://github.com/seidnerj/claude-tools#readme",
     "keywords": [
         "claude",
         "claude-code",
@@ -44,7 +53,10 @@
     ],
     "license": "MIT",
     "main": "dist/index.js",
-    "name": "claude-tools",
+    "name": "@seidnerj/claude-tools",
+    "publishConfig": {
+        "access": "public"
+    },
     "repository": {
         "type": "git",
         "url": "https://github.com/seidnerj/claude-tools.git"
@@ -53,6 +65,9 @@
         "build": "tsc",
         "lint": "tsc --noEmit",
         "prepare": "tsc",
+        "release:major": "npm version major -m \"chore: release v%s\" && git push --follow-tags",
+        "release:minor": "npm version minor -m \"chore: release v%s\" && git push --follow-tags",
+        "release:patch": "npm version patch -m \"chore: release v%s\" && git push --follow-tags",
         "test": "vitest run",
         "test:watch": "vitest"
     },

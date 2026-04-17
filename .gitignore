@@ -3,6 +3,9 @@ dist/
 build/
 *.tsbuildinfo
 
+# Superpowers working docs (plans/specs live in ~/.claude/plans/)
+docs/superpowers/
+
 # Environment
 .env
 .env.local

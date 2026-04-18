@@ -1,0 +1,18 @@
+# Gitleaks configuration for this project
+# Extends the default ruleset and adds allowlist paths for known false-positive files.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Files that are always safe to scan past"
+paths = [
+    '''\.secrets\.baseline$''',
+    '''package-lock\.json$''',
+    '''pnpm-lock\.yaml$''',
+    '''yarn\.lock$''',
+    '''uv\.lock$''',
+    '''poetry\.lock$''',
+    '''Package\.resolved$''',
+    '''Cargo\.lock$''',
+]

@@ -61,7 +61,7 @@ if [ -n "$_CC_KEY" ]; then
       *)   _CC_KEY_ID="" _CC_WS_ID="" ;;
     esac
     (
-      _CC_TMP1=$(mktemp) _CC_TMP2=$(mktemp) _CC_TMP3=$(mktemp) _CC_TMP4=$(mktemp) _CC_TMP5=$(mktemp)
+      _CC_TMP1=$(mktemp) _CC_TMP2=$(mktemp) _CC_TMP3=$(mktemp) _CC_TMP4=$(mktemp) _CC_TMP5=$(mktemp) _CC_TMP6=$(mktemp)
       curl -s "https://platform.claude.com/api/organizations/$_CC_ORG/current_spend" \\
         -H "Cookie: sessionKey=$_CC_SK" \\
         -H "Content-Type: application/json" \\
@@ -70,6 +70,10 @@ if [ -n "$_CC_KEY" ]; then
         -H "Cookie: sessionKey=$_CC_SK" \\
         -H "Content-Type: application/json" \\
         -H "anthropic-client-platform: web_console" > "$_CC_TMP5" 2>/dev/null &
+      curl -s "https://platform.claude.com/api/organizations/$_CC_ORG" \\
+        -H "Cookie: sessionKey=$_CC_SK" \\
+        -H "Content-Type: application/json" \\
+        -H "anthropic-client-platform: web_console" > "$_CC_TMP6" 2>/dev/null &
       if [ -n "$_CC_WS_ID" ]; then
         curl -s "https://platform.claude.com/api/organizations/$_CC_ORG/workspaces/$_CC_WS_ID/current_spend" \\
           -H "Cookie: sessionKey=$_CC_SK" \\
@@ -97,15 +101,17 @@ if [ -n "$_CC_KEY" ]; then
       }
       _CC_ORG_AMT=$(grep -o '"amount":[0-9]*' "$_CC_TMP1" 2>/dev/null | grep -o '[0-9]*')
       if [ -s "$_CC_TMP5" ]; then
-        _CC_TIER_LIMIT=$(grep -o '"enforced_limit_usd":[0-9]*' "$_CC_TMP5" 2>/dev/null | grep -o '[0-9]*')
         _CC_ORG_LIMIT=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); lims=[l['limit_usd'] for l in d.get('spend_limits',[]) if l['limit_action']=='notify_and_pause']; print(lims[0] if lims else '')" "$_CC_TMP5" 2>/dev/null)
+      fi
+      if [ -s "$_CC_TMP6" ]; then
+        _CC_TIER_LIMIT=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); t=d.get('rate_limit_tier',''); caps={'auto_prepaid_tier_3':20000000}; print(caps.get(t,''))" "$_CC_TMP6" 2>/dev/null)
       fi
       [ -n "$_CC_WS_ID" ] && _CC_WS_AMT=$(grep -o '"amount":[0-9]*' "$_CC_TMP2" 2>/dev/null | grep -o '[0-9]*')
       [ -n "$_CC_WS_ID" ] && _CC_WS_LIMIT=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); lims=[l['limit_usd'] for l in d.get('spend_limits',[]) if l['limit_action']=='notify_and_pause']; print(lims[0] if lims else '')" "$_CC_TMP4" 2>/dev/null)
       if [ -n "$_CC_KEY_ID" ] && [ -s "$_CC_TMP3" ]; then
         _CC_KEY_AMT=$(KEY_ID="$_CC_KEY_ID" python3 -c "import os,json,sys; d=json.load(open(sys.argv[1])); t=sum(e['total'] for day in d['costs'].values() for e in day if e['key_id']==os.environ['KEY_ID']); print(round(t))" "$_CC_TMP3" 2>/dev/null)
       fi
-      rm -f "$_CC_TMP1" "$_CC_TMP2" "$_CC_TMP3" "$_CC_TMP4" "$_CC_TMP5"
+      rm -f "$_CC_TMP1" "$_CC_TMP2" "$_CC_TMP3" "$_CC_TMP4" "$_CC_TMP5" "$_CC_TMP6"
       _cc_fmt_tier() {
         if [ -n "$1" ] && [ "$1" != "0" ] && [ "$1" != "null" ] 2>/dev/null; then printf ' [tier %s]' "$(_cc_fmt_cents "$1")"; fi
       }

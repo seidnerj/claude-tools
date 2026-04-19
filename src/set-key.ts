@@ -61,11 +61,15 @@ if [ -n "$_CC_KEY" ]; then
       *)   _CC_KEY_ID="" _CC_WS_ID="" ;;
     esac
     (
-      _CC_TMP1=$(mktemp) _CC_TMP2=$(mktemp) _CC_TMP3=$(mktemp) _CC_TMP4=$(mktemp)
+      _CC_TMP1=$(mktemp) _CC_TMP2=$(mktemp) _CC_TMP3=$(mktemp) _CC_TMP4=$(mktemp) _CC_TMP5=$(mktemp)
       curl -s "https://platform.claude.com/api/organizations/$_CC_ORG/current_spend" \\
         -H "Cookie: sessionKey=$_CC_SK" \\
         -H "Content-Type: application/json" \\
         -H "anthropic-client-platform: web_console" > "$_CC_TMP1" 2>/dev/null &
+      curl -s "https://platform.claude.com/api/organizations/$_CC_ORG/spend_limits_v2" \\
+        -H "Cookie: sessionKey=$_CC_SK" \\
+        -H "Content-Type: application/json" \\
+        -H "anthropic-client-platform: web_console" > "$_CC_TMP5" 2>/dev/null &
       if [ -n "$_CC_WS_ID" ]; then
         curl -s "https://platform.claude.com/api/organizations/$_CC_ORG/workspaces/$_CC_WS_ID/current_spend" \\
           -H "Cookie: sessionKey=$_CC_SK" \\
@@ -92,20 +96,21 @@ if [ -n "$_CC_KEY" ]; then
         if [ -n "$1" ] && [ "$1" != "0" ] && [ "$1" != "null" ] 2>/dev/null; then printf ' (%s)' "$(_cc_fmt_cents "$1")"; fi
       }
       _CC_ORG_AMT=$(grep -o '"amount":[0-9]*' "$_CC_TMP1" 2>/dev/null | grep -o '[0-9]*')
+      _CC_ORG_LIMIT=$(grep -o '"enforced_limit_usd":[0-9]*' "$_CC_TMP5" 2>/dev/null | grep -o '[0-9]*')
       [ -n "$_CC_WS_ID" ] && _CC_WS_AMT=$(grep -o '"amount":[0-9]*' "$_CC_TMP2" 2>/dev/null | grep -o '[0-9]*')
-      [ -n "$_CC_WS_ID" ] && _CC_ACCT_LIMIT=$(grep -o '"enforced_limit_usd":[0-9]*' "$_CC_TMP4" 2>/dev/null | grep -o '[0-9]*')
+      [ -n "$_CC_WS_ID" ] && _CC_WS_LIMIT=$(grep -o '"enforced_limit_usd":[0-9]*' "$_CC_TMP4" 2>/dev/null | grep -o '[0-9]*')
       if [ -n "$_CC_KEY_ID" ] && [ -s "$_CC_TMP3" ]; then
         _CC_KEY_AMT=$(KEY_ID="$_CC_KEY_ID" python3 -c "import os,json,sys; d=json.load(open(sys.argv[1])); t=sum(e['total'] for day in d['costs'].values() for e in day if e['key_id']==os.environ['KEY_ID']); print(round(t))" "$_CC_TMP3" 2>/dev/null)
       fi
-      rm -f "$_CC_TMP1" "$_CC_TMP2" "$_CC_TMP3" "$_CC_TMP4"
+      rm -f "$_CC_TMP1" "$_CC_TMP2" "$_CC_TMP3" "$_CC_TMP4" "$_CC_TMP5"
       _CC_WS_STR="n/a" _CC_KEY_STR="n/a"
-      [ -n "$_CC_WS_ID" ] && _CC_WS_STR=$(_cc_fmt_cents "$_CC_WS_AMT")
+      [ -n "$_CC_WS_ID" ] && _CC_WS_STR="$(_cc_fmt_cents "$_CC_WS_AMT")$(_cc_fmt_limit "$_CC_WS_LIMIT")"
       [ -n "$_CC_KEY_ID" ] && _CC_KEY_STR=$(_cc_fmt_cents "$_CC_KEY_AMT")
       _CC_DEDUP="/tmp/.claude-tools-spend-$_CC_ORG"
       _CC_NOW=$(date +%s)
       _CC_PREV=$(cat "$_CC_DEDUP" 2>/dev/null || echo 0)
       if [ "$((_CC_NOW - _CC_PREV))" -ge 3 ]; then
-        printf '\\n\\033[36mdirenv: spend - account: %s%s | workspace: %s | key: %s\\033[0m\\n' "$(_cc_fmt_cents "$_CC_ORG_AMT")" "$(_cc_fmt_limit "$_CC_ACCT_LIMIT")" "$_CC_WS_STR" "$_CC_KEY_STR" > /dev/tty
+        printf '\\n\\033[36mdirenv: spend - account: %s%s | workspace: %s | key: %s\\033[0m\\n' "$(_cc_fmt_cents "$_CC_ORG_AMT")" "$(_cc_fmt_limit "$_CC_ORG_LIMIT")" "$_CC_WS_STR" "$_CC_KEY_STR" > /dev/tty
         echo "$_CC_NOW" > "$_CC_DEDUP"
         [ -f "/tmp/.claude-tools-usr1-$_CC_SHELL_PID" ] && kill -USR1 $_CC_SHELL_PID 2>/dev/null
       fi

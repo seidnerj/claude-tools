@@ -41,6 +41,7 @@ export {
     storeKeyMeta,
     deleteKeyMeta,
     fetchAndStoreKeyMeta,
+    fetchOrgId,
     getAdminCreds,
     storeAdminCreds,
     deleteAdminCreds,

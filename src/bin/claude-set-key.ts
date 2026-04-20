@@ -24,7 +24,6 @@ import {
     getKeyMeta,
     storeKeyMeta,
     fetchAndStoreKeyMeta,
-    fetchOrgId,
     getAdminCreds,
     storeAdminCreds,
     deleteAdminCreds,
@@ -133,7 +132,7 @@ async function handleSet(ask: AskFn, directory: string, entries: ReturnType<type
         if (meta) storeKeyMeta(directory, meta.keyId, meta.workspaceId);
         const adminCreds = getAdminCreds(sourceDir);
         if (adminCreds) {
-            storeAdminCreds(directory, adminCreds.orgId, adminCreds.sessionKey);
+            storeAdminCreds(directory, adminCreds.sessionKey);
             console.log("Admin credentials and key metadata copied from source.");
         }
     }
@@ -276,7 +275,6 @@ async function handleRename(ask: AskFn, directory: string, entries: ReturnType<t
 async function handleSetAdmin(ask: AskFn, directory: string): Promise<void> {
     const existing = getAdminCreds(directory);
     if (existing) {
-        console.log(`Current admin org: ${existing.orgId}`);
         console.log(`Current session key: ${existing.sessionKey.slice(0, 20)}...`);
         console.log();
     }
@@ -299,14 +297,7 @@ async function handleSetAdmin(ask: AskFn, directory: string): Promise<void> {
     }
 
     console.log("Resolving org ID from session key...");
-    const orgId = await fetchOrgId(sessionKey);
-    if (!orgId) {
-        console.log("Could not resolve org ID from session key. Check that the key is valid.");
-        return;
-    }
-    console.log(`Org ID: ${orgId}`);
-
-    const stored = storeAdminCreds(directory, orgId, sessionKey);
+    const stored = storeAdminCreds(directory, sessionKey);
     if (!stored) {
         console.log("Failed to store admin credentials.");
         return;
@@ -316,7 +307,7 @@ async function handleSetAdmin(ask: AskFn, directory: string): Promise<void> {
     // Try to populate key metadata using the new credentials
     const apiKey = getKey(directory);
     if (apiKey) {
-        const metaOk = await fetchAndStoreKeyMeta(directory, apiKey, { orgId, sessionKey });
+        const metaOk = await fetchAndStoreKeyMeta(directory, apiKey, { sessionKey });
         if (metaOk) {
             console.log("Key metadata cached for workspace/key spend tracking.");
         } else {

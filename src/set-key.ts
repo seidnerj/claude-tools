@@ -42,15 +42,11 @@ if [ -n "$_CC_KEY" ]; then
     esac
   ) </dev/null &>/dev/null 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
   _CC_ADMIN=$(security find-generic-password -s "Claude Code $(echo -n "$PWD" | base64):admin" -w 2>/dev/null)
-  _CC_ORG="" _CC_SK=""
+  _CC_SK=""
   case "$_CC_ADMIN" in
-    *:*)
-      _CC_ORG="\${_CC_ADMIN%%:*}"
-      _CC_SK="\${_CC_ADMIN#*:}"
-      ;;
-    *)
-      _CC_SK="\${ANTHROPIC_ADMIN_SESSION_KEY:-}"
-      ;;
+    sk-ant-*) _CC_SK="\${_CC_ADMIN}" ;;
+    *:sk-ant-*) _CC_SK="\${_CC_ADMIN#*:}" ;;  # TODO: remove once legacy orgId:sessionKey entries are gone
+    *) _CC_SK="\${ANTHROPIC_ADMIN_SESSION_KEY:-}" ;;
   esac
   if [ -n "$_CC_SK" ]; then
     _CC_META=$(security find-generic-password -s "Claude Code $(echo -n "$PWD" | base64):meta" -w 2>/dev/null)
@@ -136,7 +132,7 @@ if [ -n "$_CC_KEY" ]; then
     ) </dev/null &>/dev/null 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
     unset _CC_META _CC_KEY_ID _CC_WS_ID
   fi
-  unset _CC_ADMIN _CC_ORG _CC_SK _CC_KEY _CC_SHELL_PID
+  unset _CC_ADMIN _CC_SK _CC_KEY _CC_SHELL_PID
   unset -f _cc_resolve_name 2>/dev/null
 fi`;
 
@@ -287,10 +283,10 @@ export async function fetchOrgId(sessionKey: string): Promise<string | null> {
  * Matching uses the partial_key_hint returned by the API (e.g. "sk-ant-api03-L79...qwAA"):
  * the key must start with the prefix and end with the suffix.
  */
-export async function fetchAndStoreKeyMeta(directory: string, apiKey: string, creds?: { sessionKey: string; orgId: string }): Promise<boolean> {
+export async function fetchAndStoreKeyMeta(directory: string, apiKey: string, creds?: { sessionKey: string }): Promise<boolean> {
     const sessionKey = creds?.sessionKey ?? getAdminCreds(directory)?.sessionKey ?? process.env.ANTHROPIC_ADMIN_SESSION_KEY;
     if (!sessionKey) return false;
-    const orgId = creds?.orgId ?? getAdminCreds(directory)?.orgId ?? (await fetchOrgId(sessionKey));
+    const orgId = await fetchOrgId(sessionKey);
     if (!orgId) return false;
 
     try {
@@ -324,28 +320,36 @@ export function deleteKeyMeta(directory: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Per-directory admin credentials (org_id + session key for spend tracking)
+// Per-directory admin credentials (session key for spend tracking)
 // ---------------------------------------------------------------------------
 
 function adminKeychainName(directory: string): string {
     return `${keychainName(directory)}:admin`;
 }
 
-/** Get stored admin credentials (org_id + session key) for a directory. */
-export function getAdminCreds(directory: string): { orgId: string; sessionKey: string } | null {
+/**
+ * Get the stored admin session key for a directory.
+ *
+ * TODO: Remove the legacy migration path once all Keychain entries have been
+ * re-stored in the new format (i.e. after users have run claude-set-key again).
+ */
+export function getAdminCreds(directory: string): { sessionKey: string } | null {
     requireMacOS();
     const raw = securityFindPassword(adminKeychainName(directory));
     if (!raw) return null;
     const idx = raw.indexOf(":");
-    if (idx < 0) return null;
-    return { orgId: raw.slice(0, idx), sessionKey: raw.slice(idx + 1) };
+    // Migration: legacy format stored "orgId:sessionKey"; session keys start with "sk-ant-"
+    if (idx >= 0 && raw.slice(idx + 1).startsWith("sk-ant-")) {
+        return { sessionKey: raw.slice(idx + 1) };
+    }
+    return { sessionKey: raw };
 }
 
-/** Store admin credentials (org_id + session key) for a directory. */
-export function storeAdminCreds(directory: string, orgId: string, sessionKey: string): boolean {
+/** Store the admin session key for a directory. */
+export function storeAdminCreds(directory: string, sessionKey: string): boolean {
     requireMacOS();
     securityDeletePassword(adminKeychainName(directory));
-    return securityAddPassword(adminKeychainName(directory), `${orgId}:${sessionKey}`);
+    return securityAddPassword(adminKeychainName(directory), sessionKey);
 }
 
 /** Delete admin credentials for a directory from the macOS Keychain. */
@@ -364,7 +368,7 @@ export function copyKey(fromDir: string, toDir: string): boolean {
         const meta = getKeyMeta(fromDir);
         if (meta) storeKeyMeta(toDir, meta.keyId, meta.workspaceId);
         const adminCreds = getAdminCreds(fromDir);
-        if (adminCreds) storeAdminCreds(toDir, adminCreds.orgId, adminCreds.sessionKey);
+        if (adminCreds) storeAdminCreds(toDir, adminCreds.sessionKey);
     }
     return ok;
 }

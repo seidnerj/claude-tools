@@ -198,6 +198,12 @@ npm run lint          # Type check
 npm run build         # Compile TypeScript
 ```
 
+## Disclaimer
+
+Claude and Claude Code are trademarks of Anthropic, PBC. This project is not affiliated with, endorsed by, or sponsored by Anthropic.
+
 ## License
 
-MIT - see [LICENSE](LICENSE).
+MIT © 2026 seidnerj
+
+This software is provided "as is" without warranty of any kind. See [LICENSE](LICENSE) for full terms.

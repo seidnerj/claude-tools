@@ -46,7 +46,7 @@ if [ -n "$_CC_KEY" ]; then
   case "$_CC_ADMIN" in
     sk-ant-*) _CC_SK="\${_CC_ADMIN}" ;;
     *:sk-ant-*) _CC_SK="\${_CC_ADMIN#*:}" ;;  # TODO: remove once legacy orgId:sessionKey entries are gone
-    *) _CC_SK="\${ANTHROPIC_ADMIN_SESSION_KEY:-}" ;;
+    *) _CC_SK="\${ANTHROPIC_API_PLAN_ADMIN_SESSION_KEY:-}" ;;
   esac
   if [ -n "$_CC_SK" ]; then
     _CC_META=$(security find-generic-password -s "Claude Code $(echo -n "$PWD" | base64):meta" -w 2>/dev/null)
@@ -284,7 +284,7 @@ export async function fetchOrgId(sessionKey: string): Promise<string | null> {
  * the key must start with the prefix and end with the suffix.
  */
 export async function fetchAndStoreKeyMeta(directory: string, apiKey: string, creds?: { sessionKey: string }): Promise<boolean> {
-    const sessionKey = creds?.sessionKey ?? getAdminCreds(directory)?.sessionKey ?? process.env.ANTHROPIC_ADMIN_SESSION_KEY;
+    const sessionKey = creds?.sessionKey ?? getAdminCreds(directory)?.sessionKey ?? process.env.ANTHROPIC_API_PLAN_ADMIN_SESSION_KEY;
     if (!sessionKey) return false;
     const orgId = await fetchOrgId(sessionKey);
     if (!orgId) return false;

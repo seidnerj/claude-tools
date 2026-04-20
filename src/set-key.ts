@@ -42,16 +42,11 @@ if [ -n "$_CC_KEY" ]; then
     esac
   ) </dev/null &>/dev/null 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
   _CC_ADMIN=$(security find-generic-password -s "Claude Code $(echo -n "$PWD" | base64):admin" -w 2>/dev/null)
+  _CC_ORG="" _CC_SK=""
   case "$_CC_ADMIN" in
     *:*)
       _CC_ORG="\${_CC_ADMIN%%:*}"
       _CC_SK="\${_CC_ADMIN#*:}"
-      export ANTHROPIC_ORG_ID="$_CC_ORG"
-      export ANTHROPIC_ADMIN_SESSION_KEY="$_CC_SK"
-      ;;
-    *)
-      _CC_ORG="\${ANTHROPIC_ORG_ID:-}"
-      _CC_SK="\${ANTHROPIC_ADMIN_SESSION_KEY:-}"
       ;;
   esac
   if [ -n "$_CC_SK" ] && [ -n "$_CC_ORG" ]; then
@@ -252,18 +247,40 @@ export function storeKeyMeta(directory: string, keyId: string, workspaceId: stri
 }
 
 /**
+ * Resolve the org UUID from a Console session key via /api/bootstrap.
+ * Returns null if the session key is invalid or the request fails.
+ */
+export async function fetchOrgId(sessionKey: string): Promise<string | null> {
+    try {
+        const resp = await fetch("https://platform.claude.com/api/bootstrap?statsig_hashing_algorithm=djb2&growthbook_format=sdk", {
+            headers: {
+                Cookie: `sessionKey=${sessionKey}`,
+                "Content-Type": "application/json",
+                "anthropic-client-platform": "web_console",
+            },
+        });
+        if (!resp.ok) return null;
+        const data = (await resp.json()) as { apiOrg?: { organization?: { uuid?: string } } };
+        return data?.apiOrg?.organization?.uuid ?? null;
+    } catch {
+        return null;
+    }
+}
+
+/**
  * Fetch the key's ID and workspace ID from the Console API and store them as metadata.
  *
- * Requires ANTHROPIC_ADMIN_SESSION_KEY and ANTHROPIC_ORG_ID to be set. Silently
- * returns false if either is missing or if the key cannot be matched.
+ * Requires a session key (from creds or stored admin credentials). Silently returns
+ * false if no session key is available or if the key cannot be matched.
  *
  * Matching uses the partial_key_hint returned by the API (e.g. "sk-ant-api03-L79...qwAA"):
  * the key must start with the prefix and end with the suffix.
  */
 export async function fetchAndStoreKeyMeta(directory: string, apiKey: string, creds?: { sessionKey: string; orgId: string }): Promise<boolean> {
-    const sessionKey = creds?.sessionKey ?? process.env.ANTHROPIC_ADMIN_SESSION_KEY;
-    const orgId = creds?.orgId ?? process.env.ANTHROPIC_ORG_ID;
-    if (!sessionKey || !orgId) return false;
+    const sessionKey = creds?.sessionKey ?? getAdminCreds(directory)?.sessionKey;
+    if (!sessionKey) return false;
+    const orgId = creds?.orgId ?? getAdminCreds(directory)?.orgId ?? (await fetchOrgId(sessionKey));
+    if (!orgId) return false;
 
     try {
         const resp = await fetch(`https://platform.claude.com/api/console/organizations/${orgId}/api_keys?limit=100`, {

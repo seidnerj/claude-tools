@@ -24,6 +24,7 @@ import {
     getKeyMeta,
     storeKeyMeta,
     fetchAndStoreKeyMeta,
+    fetchOrgId,
     getAdminCreds,
     storeAdminCreds,
     deleteAdminCreds,
@@ -287,21 +288,23 @@ async function handleSetAdmin(ask: AskFn, directory: string): Promise<void> {
         return;
     }
 
-    console.log("Obtain your org ID and admin session key from the Anthropic Console.");
+    console.log("Obtain your admin session key from the Anthropic Console.");
     console.log("The session key is the 'sessionKey' cookie value (capture via Proxyman or browser DevTools).");
     console.log();
-
-    const orgId = (await ask(`Org ID${existing ? ` [${existing.orgId}]` : ""}: `)).trim() || existing?.orgId || "";
-    if (!orgId) {
-        console.log("No org ID provided. Cancelled.");
-        return;
-    }
 
     const sessionKey = (await ask("Admin session key: ")).trim();
     if (!sessionKey) {
         console.log("No session key provided. Cancelled.");
         return;
     }
+
+    console.log("Resolving org ID from session key...");
+    const orgId = await fetchOrgId(sessionKey);
+    if (!orgId) {
+        console.log("Could not resolve org ID from session key. Check that the key is valid.");
+        return;
+    }
+    console.log(`Org ID: ${orgId}`);
 
     const stored = storeAdminCreds(directory, orgId, sessionKey);
     if (!stored) {

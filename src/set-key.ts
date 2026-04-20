@@ -48,14 +48,25 @@ if [ -n "$_CC_KEY" ]; then
       _CC_ORG="\${_CC_ADMIN%%:*}"
       _CC_SK="\${_CC_ADMIN#*:}"
       ;;
+    *)
+      _CC_SK="\${ANTHROPIC_ADMIN_SESSION_KEY:-}"
+      ;;
   esac
-  if [ -n "$_CC_SK" ] && [ -n "$_CC_ORG" ]; then
+  if [ -n "$_CC_SK" ]; then
     _CC_META=$(security find-generic-password -s "Claude Code $(echo -n "$PWD" | base64):meta" -w 2>/dev/null)
     case "$_CC_META" in
       *:*) _CC_KEY_ID="\${_CC_META%%:*}" _CC_WS_ID="\${_CC_META##*:}" ;;
       *)   _CC_KEY_ID="" _CC_WS_ID="" ;;
     esac
     (
+      if [ -z "$_CC_ORG" ]; then
+        _CC_ORG=$(curl -s "https://platform.claude.com/api/bootstrap?statsig_hashing_algorithm=djb2&growthbook_format=sdk" \\
+          -H "Cookie: sessionKey=$_CC_SK" \\
+          -H "Content-Type: application/json" \\
+          -H "anthropic-client-platform: web_console" | \\
+          python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('apiOrg',{}).get('organization',{}).get('uuid',''))" 2>/dev/null)
+      fi
+      [ -z "$_CC_ORG" ] && exit 0
       _CC_TMP1=$(mktemp) _CC_TMP2=$(mktemp) _CC_TMP3=$(mktemp) _CC_TMP4=$(mktemp) _CC_TMP5=$(mktemp) _CC_TMP6=$(mktemp)
       curl -s "https://platform.claude.com/api/organizations/$_CC_ORG/current_spend" \\
         -H "Cookie: sessionKey=$_CC_SK" \\
@@ -277,7 +288,7 @@ export async function fetchOrgId(sessionKey: string): Promise<string | null> {
  * the key must start with the prefix and end with the suffix.
  */
 export async function fetchAndStoreKeyMeta(directory: string, apiKey: string, creds?: { sessionKey: string; orgId: string }): Promise<boolean> {
-    const sessionKey = creds?.sessionKey ?? getAdminCreds(directory)?.sessionKey;
+    const sessionKey = creds?.sessionKey ?? getAdminCreds(directory)?.sessionKey ?? process.env.ANTHROPIC_ADMIN_SESSION_KEY;
     if (!sessionKey) return false;
     const orgId = creds?.orgId ?? getAdminCreds(directory)?.orgId ?? (await fetchOrgId(sessionKey));
     if (!orgId) return false;

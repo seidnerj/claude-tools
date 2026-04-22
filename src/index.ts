@@ -35,6 +35,7 @@ export {
     listKeychainEntries,
     pruneOrphanedKeyNames,
     validateKey,
+    CENTRAL_ENVRC_PATH,
     ensureEnvrc,
     removeEnvrcSnippet,
     getKeyMeta,

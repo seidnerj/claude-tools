@@ -11,6 +11,10 @@ import { execFileSync } from "node:child_process";
 import type { CapturedKeyEntry, KeychainEntry, KeychainListResult, KeyValidationResult } from "./types.js";
 import { getConfigFile, ensureConfig, configGet, configSet } from "./utils.js";
 
+const CLAUDE_TOOLS_DIR = path.join(os.homedir(), ".claude-tools");
+export const CENTRAL_ENVRC_PATH = path.join(CLAUDE_TOOLS_DIR, "envrc.sh");
+const ENVRC_SOURCE_LINE = `. "$HOME/.claude-tools/envrc.sh"`;
+
 const ENVRC_SNIPPET = `# managed by claude-tools
 _CC_KEY=$(security find-generic-password -s "Claude Code $(echo -n "$PWD" | base64)" -w 2>/dev/null)
 if [ -n "$_CC_KEY" ]; then
@@ -560,64 +564,34 @@ export function validateKey(apiKey: string): Promise<KeyValidationResult> {
     });
 }
 
-const ENVRC_BEGIN = "# --- claude-tools begin ---";
-const ENVRC_END = "# --- claude-tools end ---";
-
-function snippetHash(snippet: string): string {
-    return crypto.createHash("sha256").update(snippet).digest("hex").slice(0, 16);
+function ensureCentralEnvrc(): void {
+    if (!fs.existsSync(CLAUDE_TOOLS_DIR)) {
+        fs.mkdirSync(CLAUDE_TOOLS_DIR, { recursive: true });
+    }
+    const desired = ENVRC_SNIPPET + "\n";
+    if (!fs.existsSync(CENTRAL_ENVRC_PATH) || fs.readFileSync(CENTRAL_ENVRC_PATH, "utf-8") !== desired) {
+        fs.writeFileSync(CENTRAL_ENVRC_PATH, desired);
+    }
 }
 
-function wrappedSnippet(): string {
-    return `${ENVRC_BEGIN}\n${ENVRC_SNIPPET}\n${ENVRC_END}`;
-}
-
-function extractManagedBlock(content: string): string | null {
-    const beginIdx = content.indexOf(ENVRC_BEGIN);
-    const endIdx = content.indexOf(ENVRC_END);
-    if (beginIdx === -1 || endIdx === -1 || endIdx <= beginIdx) return null;
-    return content.slice(beginIdx + ENVRC_BEGIN.length + 1, endIdx).replace(/\n$/, "");
-}
-
-/** Ensure .envrc in a directory contains the keychain lookup snippet. */
-export function ensureEnvrc(directory: string): { created: boolean; appended: boolean; alreadyPresent: boolean; upgraded: boolean } {
+/** Ensure .envrc in a directory contains the source line that loads the central envrc script. */
+export function ensureEnvrc(directory: string): { created: boolean; appended: boolean; alreadyPresent: boolean } {
+    ensureCentralEnvrc();
     const envrc = path.join(directory, ".envrc");
 
-    if (fs.existsSync(envrc)) {
-        const content = fs.readFileSync(envrc, "utf-8");
-
-        // Delimited format: compare hash of managed block against current snippet
-        const managed = extractManagedBlock(content);
-        if (managed !== null) {
-            if (snippetHash(managed) === snippetHash(ENVRC_SNIPPET)) {
-                return { created: false, appended: false, alreadyPresent: true, upgraded: false };
-            }
-            // Hash mismatch: replace the managed block
-            removeEnvrcSnippet(directory);
-            if (fs.existsSync(envrc)) {
-                fs.appendFileSync(envrc, "\n" + wrappedSnippet() + "\n");
-            } else {
-                fs.writeFileSync(envrc, wrappedSnippet() + "\n");
-            }
-            return { created: false, appended: false, alreadyPresent: false, upgraded: true };
-        }
-
-        // Legacy format (no delimiters): upgrade
-        if (content.includes("# managed by claude-tools") || content.includes("Claude Code $ENCODED_DIR")) {
-            removeEnvrcSnippet(directory);
-            if (fs.existsSync(envrc)) {
-                fs.appendFileSync(envrc, "\n" + wrappedSnippet() + "\n");
-            } else {
-                fs.writeFileSync(envrc, wrappedSnippet() + "\n");
-            }
-            return { created: false, appended: false, alreadyPresent: false, upgraded: true };
-        }
-
-        fs.appendFileSync(envrc, "\n" + wrappedSnippet() + "\n");
-        return { created: false, appended: true, alreadyPresent: false, upgraded: false };
+    if (!fs.existsSync(envrc)) {
+        fs.writeFileSync(envrc, ENVRC_SOURCE_LINE + "\n");
+        return { created: true, appended: false, alreadyPresent: false };
     }
 
-    fs.writeFileSync(envrc, wrappedSnippet() + "\n");
-    return { created: true, appended: false, alreadyPresent: false, upgraded: false };
+    const content = fs.readFileSync(envrc, "utf-8");
+    if (content.includes(ENVRC_SOURCE_LINE)) {
+        return { created: false, appended: false, alreadyPresent: true };
+    }
+
+    const sep = content.endsWith("\n") ? "" : "\n";
+    fs.appendFileSync(envrc, sep + ENVRC_SOURCE_LINE + "\n");
+    return { created: false, appended: true, alreadyPresent: false };
 }
 
 /**
@@ -710,24 +684,18 @@ export function installZshHook(): { installed: boolean; alreadyPresent: boolean 
     return { installed: true, alreadyPresent: false };
 }
 
-/** Remove the keychain lookup snippet from .envrc. */
+/** Remove the source line added by claude-tools from .envrc. */
 export function removeEnvrcSnippet(directory: string): { removed: boolean; fileDeleted: boolean } {
     const envrc = path.join(directory, ".envrc");
     if (!fs.existsSync(envrc)) return { removed: false, fileDeleted: false };
 
-    let content = fs.readFileSync(envrc, "utf-8");
+    const content = fs.readFileSync(envrc, "utf-8");
+    if (!content.includes(ENVRC_SOURCE_LINE)) return { removed: false, fileDeleted: false };
 
-    // Remove delimited block
-    const beginRe = new RegExp(
-        `^${ENVRC_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n.*?^${ENVRC_END.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n?`,
-        "ms"
-    );
-    content = content.replace(beginRe, "");
-
-    // Remove legacy formats
-    content = content.replace(/^# managed by claude-tools$.*?^fi$\n?/ms, "").replace(/^ENCODED_DIR=\$\(echo -n "\$PWD" \| base64\)$.*?^fi$\n?/ms, "");
-
-    const cleaned = content.replace(/\n{3,}/g, "\n\n").trim();
+    const cleaned = content
+        .replace(new RegExp(`^${ENVRC_SOURCE_LINE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n?`, "m"), "")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
 
     if (!cleaned) {
         fs.unlinkSync(envrc);

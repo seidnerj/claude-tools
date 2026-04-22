@@ -14,6 +14,7 @@ import {
     validateKey,
     ensureEnvrc,
     removeEnvrcSnippet,
+    CENTRAL_ENVRC_PATH,
     getKeyMeta,
     storeKeyMeta,
     deleteKeyMeta,
@@ -434,153 +435,73 @@ describe("ensureEnvrc", () => {
         expect(result.created).toBe(true);
         expect(result.appended).toBe(false);
         expect(result.alreadyPresent).toBe(false);
-        const content = fs.readFileSync(envrcPath, "utf-8");
-        expect(content).toContain("--- claude-tools begin ---");
-        expect(content).toContain("--- claude-tools end ---");
-        expect(content).toContain("managed by claude-tools");
+        expect(fs.readFileSync(envrcPath, "utf-8").trim()).toBe('. "$HOME/.claude-tools/envrc.sh"');
     });
 
-    it("reports alreadyPresent when delimited block matches current snippet", () => {
-        // Write the current format with delimiters
+    it("writes the central envrc script to ~/.claude-tools/envrc.sh", () => {
+        ensureEnvrc(tmpDir);
+        const central = fs.readFileSync(CENTRAL_ENVRC_PATH, "utf-8");
+        expect(central).toContain("managed by claude-tools");
+        expect(central).toContain("USR1");
+        expect(central).toContain("_cc_fmt_cents");
+    });
+
+    it("reports alreadyPresent when source line is already in .envrc", () => {
         ensureEnvrc(tmpDir);
         const result = ensureEnvrc(tmpDir);
         expect(result.alreadyPresent).toBe(true);
     });
 
-    it("upgrades delimited block when hash differs", () => {
-        fs.writeFileSync(envrcPath, "# --- claude-tools begin ---\n# managed by claude-tools\nold content\nfi\n# --- claude-tools end ---\n");
-        const result = ensureEnvrc(tmpDir);
-        expect(result.upgraded).toBe(true);
-        const content = fs.readFileSync(envrcPath, "utf-8");
-        expect(content).toContain("USR1");
-        expect(content).toContain("--- claude-tools begin ---");
-        expect(content).not.toContain("old content");
-    });
-
-    it("upgrades previous format (admin creds, no spend limits) to current version", () => {
-        fs.writeFileSync(envrcPath, "# managed by claude-tools\nsome content\n_CC_ADMIN\nfi\n");
-        const result = ensureEnvrc(tmpDir);
-        expect(result.upgraded).toBe(true);
-        const content = fs.readFileSync(envrcPath, "utf-8");
-        expect(content).toContain("USR1");
-        expect(content).toContain("--- claude-tools begin ---");
-    });
-
-    it("upgrades previous format (spend display, no per-directory admin creds) to current version", () => {
-        fs.writeFileSync(envrcPath, "# managed by claude-tools\nsome content\n_cc_fmt_cents\nfi\n");
-        const result = ensureEnvrc(tmpDir);
-        expect(result.upgraded).toBe(true);
-        const content = fs.readFileSync(envrcPath, "utf-8");
-        expect(content).toContain("_cc_fmt_limit");
-    });
-
-    it("upgrades previous format (spend display, no parallel) to current version", () => {
-        fs.writeFileSync(envrcPath, "# managed by claude-tools\n_CC_SPEND\nfi\n");
-        const result = ensureEnvrc(tmpDir);
-        expect(result.upgraded).toBe(true);
-        const content = fs.readFileSync(envrcPath, "utf-8");
-        expect(content).toContain("_cc_fmt_cents");
-    });
-
-    it("upgrades previous format (name resolution, no spend) to current version", () => {
-        fs.writeFileSync(envrcPath, "# managed by claude-tools\n_cc_resolve_name\nfi\n");
-        const result = ensureEnvrc(tmpDir);
-        expect(result.upgraded).toBe(true);
-        const content = fs.readFileSync(envrcPath, "utf-8");
-        expect(content).toContain("_cc_fmt_cents");
-    });
-
-    it("upgrades previous format (yellow warnings, no name resolution) to current version", () => {
-        fs.writeFileSync(
-            envrcPath,
-            '# managed by claude-tools\n_CC_KEY=$(security)\nif [ -n "$_CC_KEY" ]; then\n  export ANTHROPIC_API_KEY="$_CC_KEY"\n  printf \'\\033[33mdirenv: warning\\033[0m\\n\' >&2\nfi\n'
-        );
-        const result = ensureEnvrc(tmpDir);
-        expect(result.upgraded).toBe(true);
-        expect(result.alreadyPresent).toBe(false);
-        const content = fs.readFileSync(envrcPath, "utf-8");
-        expect(content).toContain("_cc_fmt_cents");
-    });
-
-    it("upgrades intermediate managed format (no yellow warnings) to current version", () => {
-        fs.writeFileSync(
-            envrcPath,
-            '# managed by claude-tools\n_CC_KEY=$(security)\nif [ -n "$_CC_KEY" ]; then\n  echo "direnv: API key invalid" >&2\nfi\n'
-        );
-        const result = ensureEnvrc(tmpDir);
-        expect(result.upgraded).toBe(true);
-        expect(result.alreadyPresent).toBe(false);
-        const content = fs.readFileSync(envrcPath, "utf-8");
-        expect(content).toContain("_cc_fmt_cents");
-    });
-
-    it("upgrades old snippet format to current version", () => {
-        const oldSnippet =
-            'ENCODED_DIR=$(echo -n "$PWD" | base64)\nAPI_KEY=$(security find-generic-password -s "Claude Code $ENCODED_DIR" -w 2>/dev/null)\nif [ -n "$API_KEY" ]; then\n  export ANTHROPIC_API_KEY="$API_KEY"\nfi\n';
-        fs.writeFileSync(envrcPath, oldSnippet);
-        const result = ensureEnvrc(tmpDir);
-        expect(result.upgraded).toBe(true);
-        expect(result.alreadyPresent).toBe(false);
-        const content = fs.readFileSync(envrcPath, "utf-8");
-        expect(content).toContain("# managed by claude-tools");
-        expect(content).not.toContain("Claude Code $ENCODED_DIR");
-    });
-
-    it("upgrades old snippet when surrounded by other content", () => {
-        const oldSnippet =
-            'ENCODED_DIR=$(echo -n "$PWD" | base64)\nAPI_KEY=$(security find-generic-password -s "Claude Code $ENCODED_DIR" -w 2>/dev/null)\nif [ -n "$API_KEY" ]; then\n  export ANTHROPIC_API_KEY="$API_KEY"\nfi\n';
-        fs.writeFileSync(envrcPath, "export FOO=bar\n" + oldSnippet);
-        const result = ensureEnvrc(tmpDir);
-        expect(result.upgraded).toBe(true);
-        const content = fs.readFileSync(envrcPath, "utf-8");
-        expect(content).toContain("export FOO=bar");
-        expect(content).toContain("# managed by claude-tools");
-        expect(content).not.toContain("Claude Code $ENCODED_DIR");
-    });
-
-    it("appends to existing .envrc that lacks the snippet", () => {
+    it("appends source line to existing .envrc that lacks it", () => {
         fs.writeFileSync(envrcPath, "export FOO=bar\n");
         const result = ensureEnvrc(tmpDir);
         expect(result.appended).toBe(true);
         const content = fs.readFileSync(envrcPath, "utf-8");
         expect(content).toContain("export FOO=bar");
-        expect(content).toContain("--- claude-tools begin ---");
-        expect(content).toContain("managed by claude-tools");
+        expect(content).toContain('. "$HOME/.claude-tools/envrc.sh"');
+    });
+
+    it("appends with proper newline separator when existing content lacks trailing newline", () => {
+        fs.writeFileSync(envrcPath, "export FOO=bar");
+        ensureEnvrc(tmpDir);
+        const content = fs.readFileSync(envrcPath, "utf-8");
+        expect(content).toContain("export FOO=bar\n");
+        expect(content).toContain('. "$HOME/.claude-tools/envrc.sh"');
+    });
+
+    it("updates central file when script changes", () => {
+        ensureEnvrc(tmpDir);
+        fs.writeFileSync(CENTRAL_ENVRC_PATH, "old content\n");
+        ensureEnvrc(tmpDir);
+        expect(fs.readFileSync(CENTRAL_ENVRC_PATH, "utf-8")).toContain("managed by claude-tools");
     });
 });
 
 describe("removeEnvrcSnippet", () => {
     const envrcPath = path.join(tmpDir, ".envrc");
 
-    it("removes the new snippet and deletes file if it was the only content", () => {
-        fs.writeFileSync(envrcPath, '# managed by claude-tools\n_CC_KEY=$(security)\nif [ -n "$_CC_KEY" ]; then\n  unset _CC_RESP _CC_KEY\nfi\n');
+    it("removes the source line and deletes file if it was the only content", () => {
+        fs.writeFileSync(envrcPath, '. "$HOME/.claude-tools/envrc.sh"\n');
         const result = removeEnvrcSnippet(tmpDir);
         expect(result.removed).toBe(true);
         expect(result.fileDeleted).toBe(true);
     });
 
-    it("removes new snippet while preserving surrounding content", () => {
-        fs.writeFileSync(
-            envrcPath,
-            'export FOO=bar\n# managed by claude-tools\n_CC_KEY=$(security)\nif [ -n "$_CC_KEY" ]; then\n  unset _CC_RESP _CC_KEY\nfi\nexport BAZ=qux\n'
-        );
+    it("removes source line while preserving surrounding content", () => {
+        fs.writeFileSync(envrcPath, 'export FOO=bar\n. "$HOME/.claude-tools/envrc.sh"\nexport BAZ=qux\n');
         const result = removeEnvrcSnippet(tmpDir);
         expect(result.removed).toBe(true);
         expect(result.fileDeleted).toBe(false);
         const content = fs.readFileSync(envrcPath, "utf-8");
         expect(content).toContain("FOO=bar");
         expect(content).toContain("BAZ=qux");
-        expect(content).not.toContain("managed by claude-tools");
+        expect(content).not.toContain("envrc.sh");
     });
 
-    it("removes the old snippet format", () => {
-        fs.writeFileSync(
-            envrcPath,
-            'ENCODED_DIR=$(echo -n "$PWD" | base64)\nAPI_KEY=$(security find-generic-password -s "Claude Code $ENCODED_DIR" -w 2>/dev/null)\nif [ -n "$API_KEY" ]; then\n  export ANTHROPIC_API_KEY="$API_KEY"\nfi\n'
-        );
+    it("returns removed: false when source line is not present", () => {
+        fs.writeFileSync(envrcPath, "export FOO=bar\n");
         const result = removeEnvrcSnippet(tmpDir);
-        expect(result.removed).toBe(true);
-        expect(result.fileDeleted).toBe(true);
+        expect(result.removed).toBe(false);
     });
 
     it("returns removed: false when file does not exist", () => {

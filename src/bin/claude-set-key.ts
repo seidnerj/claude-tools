@@ -346,12 +346,10 @@ async function main(): Promise<void> {
     // Ensure .envrc has the current keychain lookup snippet
     try {
         const envrc = ensureEnvrc(directory);
-        if (envrc.upgraded) {
-            console.log(".envrc keychain lookup upgraded to current version.");
-        } else if (envrc.created) {
-            console.log("Created .envrc with keychain lookup.");
+        if (envrc.created) {
+            console.log("Created .envrc with source line for ~/.claude-tools/envrc.sh.");
         } else if (envrc.appended) {
-            console.log("Appended keychain lookup to existing .envrc.");
+            console.log("Appended source line to existing .envrc.");
         }
     } catch {
         // Non-fatal: .envrc setup failed (e.g. permissions)

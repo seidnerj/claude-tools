@@ -66,7 +66,7 @@ repos:
 
           - id: run-tests
             name: run tests
-            entry: bash -c 'npx vitest run'
+            entry: bash -c 'CI=true npx vitest run'
             language: system
             types: [ts]
             pass_filenames: false

@@ -66,6 +66,7 @@
     "scripts": {
         "build": "tsc",
         "lint": "tsc --noEmit",
+        "postinstall": "chmod +x node_modules/node-pty/prebuilds/$(node -e \"process.stdout.write(process.platform)\")-$(node -e \"process.stdout.write(process.arch)\")/spawn-helper 2>/dev/null || true",
         "prepare": "tsc",
         "release:major": "npm version major -m \"chore: release v%s\" && git push --follow-tags",
         "release:minor": "npm version minor -m \"chore: release v%s\" && git push --follow-tags",

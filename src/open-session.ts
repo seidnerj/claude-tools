@@ -8,6 +8,10 @@ export type { OpenSessionResult };
 const SESSION_URL_RE = /https:\/\/claude\.ai\/code\/session_\w+/;
 const STARTUP_TIMEOUT_MS = 15_000;
 
+function stripAnsi(str: string): string {
+    return str.replace(/\x1b\[[^a-zA-Z]*[a-zA-Z]/g, "").replace(/\x1b[^\[]/g, "");
+}
+
 export interface OpenSessionOptions {
     workspace: string;
     sessionName?: string;
@@ -58,18 +62,24 @@ function spawnSession(workspace: string, sessionName?: string): Promise<OpenSess
 
         let accumulated = "";
         let settled = false;
+        let trustAccepted = false;
 
         const timer = setTimeout(() => {
             if (settled) return;
             settled = true;
             ptyProcess.kill("SIGKILL");
-            const preview = accumulated.slice(-500);
+            const preview = stripAnsi(accumulated).slice(-500);
             reject(new Error(`Remote control did not become active within ${STARTUP_TIMEOUT_MS}ms. Last output:\n${preview}`));
         }, STARTUP_TIMEOUT_MS);
 
         ptyProcess.onData((chunk) => {
             accumulated += chunk;
             if (settled) return;
+
+            if (!trustAccepted && accumulated.includes("code.claude.com/docs/en/security")) {
+                trustAccepted = true;
+                ptyProcess.write("\r");
+            }
 
             const match = SESSION_URL_RE.exec(accumulated);
             if (match) {

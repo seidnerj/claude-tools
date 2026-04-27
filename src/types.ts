@@ -467,3 +467,13 @@ export interface ChangelogVersionResult {
     /** All entries for that version */
     entries: ChangelogEntry[];
 }
+
+/** Result returned by openSession after a Claude Code instance starts with remote control active. */
+export interface OpenSessionResult {
+    /** Present only when the caller provided a sessionName. */
+    sessionName?: string;
+    /** The https://claude.ai/code/session_xxx URL shown in the remote control UI. */
+    sessionUrl: string;
+    /** The absolute workspace path used to start the session. */
+    workspace: string;
+}

@@ -15,7 +15,9 @@
     "bugs": {
         "url": "https://github.com/seidnerj/claude-tools/issues"
     },
-    "dependencies": {},
+    "dependencies": {
+        "node-pty": "^1.1.0"
+    },
     "description": "TypeScript library for managing Claude Code session history, secrets, API keys, and more",
     "devDependencies": {
         "@types/node": "^22.15.3",

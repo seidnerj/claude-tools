@@ -53,7 +53,7 @@ function spawnSession(workspace: string, sessionName?: string): Promise<OpenSess
             cols: 120,
             rows: 40,
             cwd: workspace,
-            env: env as Record<string, string>,
+            env: env as NodeJS.ProcessEnv,
         });
 
         let accumulated = "";

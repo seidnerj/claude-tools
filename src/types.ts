@@ -476,4 +476,6 @@ export interface OpenSessionResult {
     sessionUrl: string;
     /** The absolute workspace path used to start the session. */
     workspace: string;
+    /** The tmux session hosting the Claude process. Attach with `tmux attach -t <name>`. */
+    tmuxSession: string;
 }

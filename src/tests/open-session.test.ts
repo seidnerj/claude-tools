@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { describe, it, expect, afterEach } from "vitest";
 import { openSession } from "../open-session.js";
 
@@ -25,27 +25,48 @@ describe("openSession - input validation", () => {
     });
 });
 
+const HAS_TMUX = spawnSync("tmux", ["-V"], { stdio: "ignore" }).status === 0;
+
+describe.skipIf(!HAS_TMUX)("openSession - tmux session collisions", () => {
+    const collisionName = `collision-test-${Date.now()}`;
+    const tmuxName = `claude-rc-${collisionName}`;
+
+    afterEach(() => {
+        spawnSync("tmux", ["kill-session", "-t", `=${tmuxName}`], { stdio: "ignore" });
+    });
+
+    it("throws when a tmux session with the derived name already exists", async () => {
+        spawnSync("tmux", ["new-session", "-d", "-s", tmuxName, "sleep", "60"], { stdio: "ignore" });
+        await expect(openSession({ workspace: os.tmpdir(), sessionName: collisionName })).rejects.toThrow(/tmux session .* already exists/);
+    });
+});
+
 const SKIP_INTEGRATION = process.env.CI === "true";
 
 describe.skipIf(SKIP_INTEGRATION)("openSession - integration", () => {
     const sessionName = `test-session-${Date.now()}`;
+    let tmuxSession: string | undefined;
 
     afterEach(() => {
-        try {
-            execFileSync("pkill", ["-f", `claude --rc ${sessionName}`], { stdio: "ignore" });
-        } catch {
-            // process already gone - this is fine
+        if (tmuxSession) {
+            spawnSync("tmux", ["kill-session", "-t", `=${tmuxSession}`], { stdio: "ignore" });
+            tmuxSession = undefined;
         }
     });
 
-    it("spawns a session and returns a sessionUrl and workspace", async () => {
+    it("spawns a session inside tmux and returns the session URL plus tmux name", async () => {
         const result = await openSession({
             workspace: os.tmpdir(),
             sessionName,
         });
+        tmuxSession = result.tmuxSession;
 
         expect(result.sessionName).toBe(sessionName);
         expect(result.workspace).toBe(os.tmpdir());
         expect(result.sessionUrl).toMatch(/^https:\/\/claude\.ai\/code\/session_\w+$/);
-    }, 20_000);
+        expect(result.tmuxSession).toMatch(/^claude-rc-/);
+
+        const has = spawnSync("tmux", ["has-session", "-t", `=${result.tmuxSession}`], { stdio: "ignore" });
+        expect(has.status).toBe(0);
+    }, 35_000);
 });

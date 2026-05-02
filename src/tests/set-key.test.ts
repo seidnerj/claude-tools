@@ -20,6 +20,7 @@ import {
     deleteKeyMeta,
     hasZshHook,
     installZshHook,
+    fetchOrgId,
 } from "../set-key.js";
 
 const tmpDir = vi.hoisted(() => process.cwd() + "/.test-tmp-set-key");
@@ -619,5 +620,57 @@ describe("zsh hook", () => {
         const result = installZshHook();
         expect(result.installed).toBe(false);
         expect(result.alreadyPresent).toBe(true);
+    });
+});
+
+describe("fetchOrgId", () => {
+    let origFetch: typeof globalThis.fetch;
+
+    beforeEach(() => {
+        origFetch = globalThis.fetch;
+    });
+
+    afterEach(() => {
+        globalThis.fetch = origFetch;
+    });
+
+    function mockFetchOnce(body: unknown, ok = true): void {
+        globalThis.fetch = vi.fn().mockResolvedValue({ ok, json: async () => body }) as unknown as typeof fetch;
+    }
+
+    it("extracts org uuid from account.memberships[*] where capabilities includes 'api'", async () => {
+        mockFetchOnce({
+            account: {
+                memberships: [
+                    { organization: { uuid: "claude-ai-org", capabilities: ["chat"] } },
+                    { organization: { uuid: "api-org-uuid", capabilities: ["api"] } },
+                ],
+            },
+        });
+        await expect(fetchOrgId("sk-ant-sid02-test")).resolves.toBe("api-org-uuid");
+    });
+
+    it("returns null when no membership has the 'api' capability", async () => {
+        mockFetchOnce({
+            account: {
+                memberships: [{ organization: { uuid: "claude-ai-org", capabilities: ["chat"] } }],
+            },
+        });
+        await expect(fetchOrgId("sk-ant-sid02-test")).resolves.toBeNull();
+    });
+
+    it("returns null when the legacy apiOrg field is present but the new shape is absent (regression)", async () => {
+        mockFetchOnce({ apiOrg: { organization: { uuid: "stale-uuid" } } });
+        await expect(fetchOrgId("sk-ant-sid02-test")).resolves.toBeNull();
+    });
+
+    it("returns null on non-2xx response", async () => {
+        mockFetchOnce({}, false);
+        await expect(fetchOrgId("sk-ant-sid02-test")).resolves.toBeNull();
+    });
+
+    it("returns null when fetch throws", async () => {
+        globalThis.fetch = vi.fn().mockRejectedValue(new Error("network")) as unknown as typeof fetch;
+        await expect(fetchOrgId("sk-ant-sid02-test")).resolves.toBeNull();
     });
 });

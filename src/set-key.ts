@@ -64,7 +64,7 @@ if [ -n "$_CC_KEY" ]; then
           -H "Cookie: sessionKey=$_CC_SK" \\
           -H "Content-Type: application/json" \\
           -H "anthropic-client-platform: web_console" | \\
-          python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('apiOrg',{}).get('organization',{}).get('uuid',''))" 2>/dev/null)
+          python3 -c "import json,sys; d=json.load(sys.stdin); print(next((o.get('uuid','') for m in d.get('account',{}).get('memberships',[]) for o in [m.get('organization',{})] if 'api' in (o.get('capabilities') or [])), ''))" 2>/dev/null)
       fi
       [ -z "$_CC_ORG" ] && exit 0
       _CC_TMP1=$(mktemp) _CC_TMP2=$(mktemp) _CC_TMP3=$(mktemp) _CC_TMP4=$(mktemp) _CC_TMP5=$(mktemp) _CC_TMP6=$(mktemp)
@@ -110,8 +110,10 @@ if [ -n "$_CC_KEY" ]; then
         _CC_ORG_LIMIT=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); lims=[l['limit_usd'] for l in d.get('spend_limits',[]) if l['limit_action']=='notify_and_pause']; print(lims[0] if lims else '')" "$_CC_TMP5" 2>/dev/null)
       fi
       if [ -s "$_CC_TMP6" ]; then
-        _CC_TIER_INFO=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); t=d.get('rate_limit_tier',''); tiers={'auto_prepaid_tier_3':('Tier 4',20000000)}; info=tiers.get(t); print(info[0]+':'+str(info[1]) if info else '')" "$_CC_TMP6" 2>/dev/null)
-        _CC_TIER_NAME="\${_CC_TIER_INFO%%:*}" _CC_TIER_LIMIT="\${_CC_TIER_INFO##*:}"
+        _CC_TIER_NAME=$(python3 -c "import json,sys,re; t=json.load(open(sys.argv[1])).get('rate_limit_tier','') or ''; m=re.match(r'auto_prepaid_tier_(\\d+)$', t); print('' if not t else f'Tier {int(m.group(1))+1}' if m else 'Free Tier' if t=='auto_api_evaluation' else 'Evaluation Tier' if t in ('default_after_self_serve_aisa','limited_evaluation') else 'Custom Plan' if re.match(r'manual_tier_\\d+$', t) else 'unknown tier/plan')" "$_CC_TMP6" 2>/dev/null)
+      fi
+      if [ -s "$_CC_TMP5" ]; then
+        _CC_TIER_LIMIT=$(python3 -c "import json,sys; v=json.load(open(sys.argv[1])).get('enforced_limit_usd'); print(v if v else '')" "$_CC_TMP5" 2>/dev/null)
       fi
       [ -n "$_CC_WS_ID" ] && _CC_WS_AMT=$(grep -o '"amount":[0-9]*' "$_CC_TMP2" 2>/dev/null | grep -o '[0-9]*')
       [ -n "$_CC_WS_ID" ] && _CC_WS_LIMIT=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); lims=[l['limit_usd'] for l in d.get('spend_limits',[]) if l['limit_action']=='notify_and_pause']; print(lims[0] if lims else '')" "$_CC_TMP4" 2>/dev/null)
@@ -120,7 +122,9 @@ if [ -n "$_CC_KEY" ]; then
       fi
       rm -f "$_CC_TMP1" "$_CC_TMP2" "$_CC_TMP3" "$_CC_TMP4" "$_CC_TMP5" "$_CC_TMP6"
       _cc_fmt_tier() {
-        if [ -n "$1" ] && [ -n "$2" ] && [ "$2" != "0" ] 2>/dev/null; then printf ' [%s %s]' "$1" "$(_cc_fmt_cents "$2")"; fi
+        if [ -n "$1" ]; then
+          if [ -n "$2" ] && [ "$2" != "0" ] 2>/dev/null; then printf ' [%s %s]' "$1" "$(_cc_fmt_cents "$2")"; else printf ' [%s]' "$1"; fi
+        fi
       }
       _CC_WS_STR="n/a" _CC_KEY_STR="n/a"
       [ -n "$_CC_WS_ID" ] && _CC_WS_STR="$(_cc_fmt_cents "$_CC_WS_AMT")$(_cc_fmt_limit "$_CC_WS_LIMIT")"
@@ -271,8 +275,11 @@ export async function fetchOrgId(sessionKey: string): Promise<string | null> {
             },
         });
         if (!resp.ok) return null;
-        const data = (await resp.json()) as { apiOrg?: { organization?: { uuid?: string } } };
-        return data?.apiOrg?.organization?.uuid ?? null;
+        const data = (await resp.json()) as {
+            account?: { memberships?: Array<{ organization?: { uuid?: string; capabilities?: string[] } }> };
+        };
+        const apiOrg = data?.account?.memberships?.find((m) => m.organization?.capabilities?.includes("api"));
+        return apiOrg?.organization?.uuid ?? null;
     } catch {
         return null;
     }

@@ -1325,8 +1325,9 @@ describe("fail_closed mode", () => {
 //
 // The classifier emits the API call's `usage` block and `model` name on the
 // HookOutput so the bin entry can put them on the top-level stdout JSON.
-// The out-of-process post-processor reads those fields and forwards
-// them into Claude Code's in-process spend accumulator.
+// Any consumer that recognizes these optional fields (e.g. an out-of-process
+// hook-output post-processor) can route them into Claude Code's in-process
+// spend accumulator.
 // ---------------------------------------------------------------------------
 
 describe("usage and model passthrough", () => {

@@ -48,9 +48,10 @@ async function main(): Promise<void> {
                 ...(result.additionalContext && { additionalContext: result.additionalContext }),
                 ...(result.updatedInput && { updatedInput: result.updatedInput }),
             },
-            // Top-level `usage` and `model` are read by the out-of-process post-processor
-            // out-of-process post-processor's hook-output parser and routed into
-            // CC's in-process spend accumulator. Omitted on fast-path hits.
+            // Optional top-level `usage` and `model` are emitted so any
+            // consumer that recognizes them (e.g. an out-of-process hook-output
+            // post-processor) can route them into CC's in-process spend
+            // accumulator. Omitted on fast-path hits where no LLM ran.
             ...(result.usage && { usage: result.usage }),
             ...(result.model && { model: result.model }),
         };

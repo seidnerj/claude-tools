@@ -316,7 +316,7 @@ export async function checkToolSafety(
 
     // Accumulator for per-stage usage/model. Each successful API call pushes
     // one entry; we aggregate them onto the final result so the bin entry
-    // can forward the totals to the out-of-process post-processor.
+    // can forward the totals on the top-level stdout JSON envelope.
     const usageEntries: ApiUsageEntry[] = [];
 
     try {

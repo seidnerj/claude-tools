@@ -52,9 +52,9 @@ export interface LlmSearchResult {
     /**
      * Usage block from the LLM call, when the search dispatched one.
      * Populated for callers that want to forward this to the parent CC
-     * session's spend accumulator via the MCP tool result's `_meta`
-     * (consumed by the out-of-process post-processor). Absent when the
-     * search short-circuits without an API call (e.g. zero hits).
+     * session's spend accumulator via the MCP tool result's `_meta` field
+     * (any consumer that recognizes it can route it through). Absent when
+     * the search short-circuits without an API call (e.g. zero hits).
      */
     usage?: {
         input_tokens: number;
@@ -310,8 +310,8 @@ export interface HookOutput {
     /**
      * Aggregated token usage across all classifier API calls that produced this
      * output. Forwarded by the bin entry point to the top-level stdout JSON
-     * envelope so the out-of-process post-processor can route it into
-     * Claude Code's in-process spend accumulator.
+     * envelope so any consumer that recognizes these optional fields can route
+     * them into Claude Code's in-process spend accumulator.
      */
     usage?: ApiUsage;
     /** Model name from the LAST classifier stage that ran. Forwarded alongside `usage`. */

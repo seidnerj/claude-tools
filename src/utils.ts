@@ -227,8 +227,9 @@ export interface CallClaudeResult {
  * Producers that want their out-of-process LLM costs to surface in the
  * parent Claude Code session's spend accumulator can pass the returned
  * `usage` and `model` through to the MCP `_meta` field on tool results
- * (or to the hook output JSON envelope) - the `usage-meta-passthrough` ***
- * gene picks them up from there. See ***.
+ * (or to the hook output JSON envelope). Any consumer that recognizes
+ * those optional fields can route them into the parent's accumulator;
+ * consumers that don't recognize them treat them as unknown keys.
  */
 export async function callClaudeWithMeta(
     apiKey: string,
@@ -271,8 +272,7 @@ export async function callClaudeWithMeta(
  *
  * Thin convenience wrapper around `callClaudeWithMeta` for callers that
  * don't need usage data. New code that wants to forward usage to the
- * spend accumulator (via the out-of-process post-processor) should call
- * `callClaudeWithMeta` directly.
+ * parent's spend accumulator should call `callClaudeWithMeta` directly.
  */
 export async function callClaude(
     apiKey: string,

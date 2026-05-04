@@ -186,7 +186,7 @@ This is what makes "use both" defense-in-depth: our hook gets first crack with c
 
 Auto Mode's classifier tokens land in the session's `/cost`, statusline, and rate-limit accounting **automatically** because the call goes through the in-process `query()` wrapper. Telemetry events are tagged `querySource: "auto_mode"` so they can be split out from main-loop spend if desired.
 
-Our hook can't replicate this directly because we run as a subprocess and have no pointer to CC's accumulator. Phase 2 of the safety hook plan introduces a out-of-process post-processor that patches CC's hook output parser to accept a `usage` field and add it to the accumulator — closing the gap. (See plan: `~/.claude/plans/2026-05-04-llm-safety-hook-phase-1.md` "Phase 2".)
+Our hook can't replicate this directly because we run as a subprocess and have no pointer to CC's accumulator. Phase 2 of the safety hook plan relies on an out-of-process post-processor that augments CC's hook output handling to recognize an optional `usage` field and add it to the accumulator — closing the gap. (See plan: `~/.claude/plans/2026-05-04-llm-safety-hook-phase-1.md` "Phase 2".)
 
 ---
 
@@ -270,4 +270,4 @@ Quick cross-reference between Auto Mode and our `llm-safety-check.ts` after Phas
 | Failure mode                | Fail-closed (hardcoded)                     | Configurable via `safety.fail_closed` (default fail-open)                                                                            |
 | Hard deny                   | No (block → retry)                          | Yes — `{decision: "deny"}` short-circuits permission chain                                                                           |
 | File inspection             | None                                        | Two-pass `needs_context` (single-stage-thinking and S2 only)                                                                         |
-| Cost attribution            | In-process accumulator (free)               | Phase 2 — out-of-process post-processor patching the hook output parser                                                                         |
+| Cost attribution            | In-process accumulator (free)               | Phase 2 — out-of-process post-processor that augments hook output handling                                                           |

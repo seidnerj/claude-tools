@@ -7,8 +7,8 @@ import * as path from "node:path";
 import { readFile, stat } from "node:fs/promises";
 import * as os from "node:os";
 import { getApiKey, configGet } from "./utils.js";
-import type { SafetyCheckResult, HookInput, HookOutput, BlockState } from "./types.js";
-import { SYSTEM_PROMPT } from "./safety-prompts.js";
+import type { SafetyCheckResult, HookInput, HookOutput, BlockState, SafetyUserRules } from "./types.js";
+import { buildSystemPrompt } from "./safety-prompts.js";
 
 const DEFAULT_SAFETY_MODEL = "claude-opus-4-6";
 const SAFETY_MAX_TOKENS = 1000;
@@ -393,6 +393,9 @@ async function callSafetyModel(apiKey: string, userMessage: string, model?: stri
     const billingBlock = buildBillingHeaderBlock();
     if (!billingBlock) return null;
 
+    const userRules = configGet("safety.user_rules") as SafetyUserRules | undefined;
+    const systemText = buildSystemPrompt(userRules);
+
     const safetyModel = model || configGet("safety.model", DEFAULT_SAFETY_MODEL) || DEFAULT_SAFETY_MODEL;
     const supportsThinking = /sonnet-4-[56]|opus-4-[56]/.test(safetyModel);
     const cacheControl = { type: "ephemeral" as const, ttl: "1h" as const };
@@ -403,7 +406,7 @@ async function callSafetyModel(apiKey: string, userMessage: string, model?: stri
         // access on workspace-restricted API keys (see buildBillingHeaderBlock above)
         system: [
             { ...billingBlock, cache_control: cacheControl },
-            { type: "text", text: SYSTEM_PROMPT, cache_control: cacheControl },
+            { type: "text", text: systemText, cache_control: cacheControl },
         ],
         messages: [
             {

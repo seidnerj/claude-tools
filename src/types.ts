@@ -283,6 +283,13 @@ export interface BlockState {
     totalDenials: number;
 }
 
+/** User-supplied additions to the safety classifier rules. Each list is merged with defaults. */
+export interface SafetyUserRules {
+    block_rules?: string[];
+    allow_rules?: string[];
+    environment?: string[];
+}
+
 /** A single status update within an incident timeline */
 export interface StatusUpdate {
     /** Timestamp of this update (ISO 8601) */

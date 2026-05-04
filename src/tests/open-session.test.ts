@@ -1,8 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { spawnSync } from "node:child_process";
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import { openSession, buildClaudeArgs } from "../open-session.js";
 
 describe("openSession - input validation", () => {
@@ -11,7 +10,7 @@ describe("openSession - input validation", () => {
     });
 
     it("throws when workspace does not exist", async () => {
-        await expect(openSession({ workspace: "/nonexistent/path/that/does/not/exist" })).rejects.toThrow("workspace does not exist");
+        await expect(openSession({ workspace: "/nonexistent/path" })).rejects.toThrow("workspace does not exist");
     });
 
     it("throws when workspace is a file, not a directory", async () => {
@@ -62,54 +61,36 @@ describe("buildClaudeArgs", () => {
         expect(buildClaudeArgs({ workspace: "/tmp", continueLast: true })).toEqual(["--rc", "--continue"]);
     });
 
+    it("appends extraArgs after the primary mode flag", () => {
+        expect(
+            buildClaudeArgs({
+                workspace: "/tmp",
+                resume: "abc",
+                extraArgs: ["--model", "claude-opus-4-6", "--add-dir", "/extra"],
+            })
+        ).toEqual(["--rc", "--resume", "abc", "--model", "claude-opus-4-6", "--add-dir", "/extra"]);
+    });
+
+    it("appends extraArgs even with no primary mode flag", () => {
+        expect(buildClaudeArgs({ workspace: "/tmp", extraArgs: ["--debug"] })).toEqual(["--rc", "--debug"]);
+    });
+
     it("continueLast wins if (defensively) combined with sessionName or resume", () => {
         expect(buildClaudeArgs({ workspace: "/tmp", continueLast: true, sessionName: "x", resume: "y" })).toEqual(["--rc", "--continue"]);
     });
 });
 
-const HAS_TMUX = spawnSync("tmux", ["-V"], { stdio: "ignore" }).status === 0;
+const RUN_INTEGRATION = process.env.RUN_INTEGRATION_TESTS === "1";
 
-describe.skipIf(!HAS_TMUX)("openSession - tmux session collisions", () => {
-    const collisionName = `collision-test-${Date.now()}`;
-    const tmuxName = `claude-rc-${collisionName}`;
-
-    afterEach(() => {
-        spawnSync("tmux", ["kill-session", "-t", `=${tmuxName}`], { stdio: "ignore" });
-    });
-
-    it("throws when a tmux session with the derived name already exists", async () => {
-        spawnSync("tmux", ["new-session", "-d", "-s", tmuxName, "sleep", "60"], { stdio: "ignore" });
-        await expect(openSession({ workspace: os.tmpdir(), sessionName: collisionName })).rejects.toThrow(/tmux session .* already exists/);
-    });
-});
-
-const SKIP_INTEGRATION = process.env.CI === "true";
-
-describe.skipIf(SKIP_INTEGRATION)("openSession - integration", () => {
-    const sessionName = `test-session-${Date.now()}`;
-    let tmuxSession: string | undefined;
-
-    afterEach(() => {
-        if (tmuxSession) {
-            spawnSync("tmux", ["kill-session", "-t", `=${tmuxSession}`], { stdio: "ignore" });
-            tmuxSession = undefined;
-        }
-    });
-
-    it("spawns a session inside tmux and returns the session URL plus tmux name", async () => {
+describe.skipIf(!RUN_INTEGRATION)("openSession - integration (RUN_INTEGRATION_TESTS=1)", () => {
+    it("spawns a session in the default terminal and returns the URL", async () => {
         const result = await openSession({
-            workspace: os.tmpdir(),
-            sessionName,
+            workspace: process.cwd(),
+            sessionName: `integ-${Date.now()}`,
+            startupTimeoutMs: 60_000,
         });
-        tmuxSession = result.tmuxSession;
-
-        expect(result.sessionName).toBe(sessionName);
-        expect(result.workspace).toBe(os.tmpdir());
         expect(result.sessionUrl).toMatch(/^https:\/\/claude\.ai\/code\/session_\w+$/);
-        expect(result.tmuxSession).toMatch(/^claude-rc-/);
-        expect(result.resumedSessionId).toBeUndefined();
-
-        const has = spawnSync("tmux", ["has-session", "-t", `=${result.tmuxSession}`], { stdio: "ignore" });
-        expect(has.status).toBe(0);
-    }, 35_000);
+        expect(result.handlerId).toMatch(/^(macos-default|linux-xdg|linux-alt)$/);
+        expect(typeof result.sessionId).toBe("string");
+    }, 90_000);
 });

@@ -1,23 +1,25 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { spawnSync } from "node:child_process";
 import type { OpenSessionResult } from "./types.js";
+import { willHitTrustDialog, WorkspaceNotTrustedError } from "./trust-check.js";
+import { launchInDefaultTerminal } from "./terminal-launcher.js";
+import { watchForSessionUrl } from "./session-watcher.js";
 
 export type { OpenSessionResult };
+export { WorkspaceNotTrustedError } from "./trust-check.js";
+export { NoGUITerminalError, TerminalLaunchError } from "./terminal-launcher.js";
+export { SessionWatchTimeoutError } from "./session-watcher.js";
 
-const SESSION_URL_RE = /https:\/\/claude\.ai\/code\/session_\w+/;
-const TRUST_PROMPT_MARKER = "code.claude.com/docs/en/security";
-const STARTUP_TIMEOUT_MS = 30_000;
-const POLL_INTERVAL_MS = 250;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface OpenSessionOptions {
     workspace: string;
-    /** Display name for a new session. Mutually exclusive with `resume` and `continueLast`. */
+    /** Display name for a NEW session. Mutually exclusive with `resume` and `continueLast`. */
     sessionName?: string;
     /**
-     * Resume an existing session. Accepts a session UUID OR a session name (set via `/rename`
-     * inside Claude Code). Passed through to `claude --resume <value>` verbatim - claude itself
-     * resolves names to IDs. Mutually exclusive with `sessionName` and `continueLast`.
+     * Resume an existing session. Accepts a session UUID OR a session name (set via /rename
+     * inside Claude Code). Passed through to `claude --resume <value>` verbatim - claude
+     * itself resolves names to IDs. Mutually exclusive with `sessionName` and `continueLast`.
      */
     resume?: string;
     /**
@@ -25,24 +27,34 @@ export interface OpenSessionOptions {
      * Mutually exclusive with `sessionName` and `resume`.
      */
     continueLast?: boolean;
+    /**
+     * Escape hatch for arbitrary additional claude CLI flags. Appended after the
+     * resume/continue/sessionName flags. Caller owns any security implications.
+     */
+    extraArgs?: string[];
+    /** URL-discovery timeout. Default 60_000 (60s). */
+    startupTimeoutMs?: number;
 }
 
+/**
+ * Build the args passed to `claude` (everything after the binary name).
+ * Pure function - exported for testing.
+ */
 export function buildClaudeArgs(opts: OpenSessionOptions): string[] {
     const args = ["--rc"];
     if (opts.continueLast) args.push("--continue");
     else if (opts.resume) args.push("--resume", opts.resume);
     else if (opts.sessionName) args.push(opts.sessionName);
+    if (opts.extraArgs?.length) args.push(...opts.extraArgs);
     return args;
 }
 
-export async function openSession(opts: OpenSessionOptions): Promise<OpenSessionResult> {
-    const { workspace, sessionName, resume, continueLast } = opts;
+function looksLikeUuid(s: string | undefined): s is string {
+    return typeof s === "string" && UUID_RE.test(s);
+}
 
-    const exclusiveCount = [sessionName, resume, continueLast].filter(Boolean).length;
-    if (exclusiveCount > 1) {
-        throw new Error("openSession: sessionName, resume, and continueLast are mutually exclusive");
-    }
-
+function validateInputs(opts: OpenSessionOptions): void {
+    const { workspace } = opts;
     if (!path.isAbsolute(workspace)) {
         throw new Error("workspace must be an absolute path");
     }
@@ -52,105 +64,35 @@ export async function openSession(opts: OpenSessionOptions): Promise<OpenSession
     if (!fs.statSync(workspace).isDirectory()) {
         throw new Error("workspace is not a directory");
     }
+    const exclusiveCount = [opts.sessionName, opts.resume, opts.continueLast].filter(Boolean).length;
+    if (exclusiveCount > 1) {
+        throw new Error("openSession: sessionName, resume, and continueLast are mutually exclusive");
+    }
+}
 
-    if (spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0) {
-        throw new Error("tmux is required to open a Claude Code session but was not found on PATH. Install it (e.g. `brew install tmux`).");
+export async function openSession(opts: OpenSessionOptions): Promise<OpenSessionResult> {
+    validateInputs(opts);
+
+    if (await willHitTrustDialog(opts.workspace)) {
+        throw new WorkspaceNotTrustedError(opts.workspace);
     }
 
-    const tmuxSession = resolveTmuxName(sessionName);
-    return spawnSession(workspace, tmuxSession, opts);
-}
+    const cmd = ["claude", ...buildClaudeArgs(opts)];
+    const { handlerId } = await launchInDefaultTerminal({ cwd: opts.workspace, cmd });
 
-function buildTmuxName(sessionName?: string): string {
-    if (!sessionName) {
-        return `claude-rc-${Date.now()}`;
-    }
-    const sanitized = sessionName.replace(/[^A-Za-z0-9_-]/g, "_");
-    return `claude-rc-${sanitized}`;
-}
-
-function tmuxSessionExists(name: string): boolean {
-    return spawnSync("tmux", ["has-session", "-t", `=${name}`], { stdio: "ignore" }).status === 0;
-}
-
-function resolveTmuxName(sessionName?: string): string {
-    const candidate = buildTmuxName(sessionName);
-    if (!tmuxSessionExists(candidate)) {
-        return candidate;
-    }
-    throw new Error(`tmux session '${candidate}' already exists. Kill it (\`tmux kill-session -t '${candidate}'\`) or pass a different sessionName.`);
-}
-
-function shellQuote(s: string): string {
-    return `'${s.replace(/'/g, `'\\''`)}'`;
-}
-
-function capturePane(tmuxSession: string): string {
-    const r = spawnSync("tmux", ["capture-pane", "-p", "-t", `=${tmuxSession}`], { encoding: "utf8" });
-    return r.stdout ?? "";
-}
-
-function spawnSession(workspace: string, tmuxSession: string, opts: OpenSessionOptions): Promise<OpenSessionResult> {
-    return new Promise((resolve, reject) => {
-        const cmd = ["claude", ...buildClaudeArgs(opts).map(shellQuote)].join(" ");
-
-        const create = spawnSync("tmux", ["new-session", "-d", "-s", tmuxSession, "-c", workspace, "-x", "120", "-y", "40", cmd], {
-            encoding: "utf8",
-        });
-
-        if (create.status !== 0) {
-            const err = (create.stderr || "").trim() || "unknown error";
-            reject(new Error(`tmux new-session failed: ${err}`));
-            return;
-        }
-
-        let settled = false;
-        let trustAccepted = false;
-
-        const killSession = () => {
-            spawnSync("tmux", ["kill-session", "-t", `=${tmuxSession}`], { stdio: "ignore" });
-        };
-
-        const timer = setTimeout(() => {
-            if (settled) return;
-            settled = true;
-            clearInterval(interval);
-            const tail = capturePane(tmuxSession).slice(-500);
-            killSession();
-            reject(new Error(`Remote control did not become active within ${STARTUP_TIMEOUT_MS}ms. Last output:\n${tail}`));
-        }, STARTUP_TIMEOUT_MS);
-
-        const interval = setInterval(() => {
-            if (settled) return;
-
-            if (!tmuxSessionExists(tmuxSession)) {
-                settled = true;
-                clearInterval(interval);
-                clearTimeout(timer);
-                reject(new Error("Claude process exited before remote control became active"));
-                return;
-            }
-
-            const output = capturePane(tmuxSession);
-
-            if (!trustAccepted && output.includes(TRUST_PROMPT_MARKER)) {
-                trustAccepted = true;
-                spawnSync("tmux", ["send-keys", "-t", `=${tmuxSession}`, "Enter"], { stdio: "ignore" });
-            }
-
-            const match = SESSION_URL_RE.exec(output);
-            if (match) {
-                settled = true;
-                clearInterval(interval);
-                clearTimeout(timer);
-                resolve({
-                    ...(opts.sessionName !== undefined && { sessionName: opts.sessionName }),
-                    ...(opts.resume !== undefined && { resumedSessionId: opts.resume }),
-                    sessionUrl: match[0],
-                    workspace,
-                    tmuxSession,
-                });
-            }
-        }, POLL_INTERVAL_MS);
+    const expectedSessionId = looksLikeUuid(opts.resume) ? opts.resume : undefined;
+    const { sessionUrl, sessionId } = await watchForSessionUrl({
+        workspace: opts.workspace,
+        timeoutMs: opts.startupTimeoutMs,
+        expectedSessionId,
     });
+
+    return {
+        ...(opts.sessionName !== undefined && { sessionName: opts.sessionName }),
+        ...(opts.resume !== undefined && { resumedSessionId: opts.resume }),
+        sessionUrl,
+        workspace: opts.workspace,
+        handlerId,
+        sessionId,
+    };
 }

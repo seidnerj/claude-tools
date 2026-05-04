@@ -3,14 +3,10 @@ import * as path from "node:path";
 import type { OpenSessionResult } from "./types.js";
 import { willHitTrustDialog, WorkspaceNotTrustedError } from "./trust-check.js";
 import { launchInDefaultTerminal } from "./terminal-launcher.js";
-import { watchForSessionUrl } from "./session-watcher.js";
 
 export type { OpenSessionResult };
 export { WorkspaceNotTrustedError } from "./trust-check.js";
 export { NoGUITerminalError, TerminalLaunchError } from "./terminal-launcher.js";
-export { SessionWatchTimeoutError } from "./session-watcher.js";
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface OpenSessionOptions {
     workspace: string;
@@ -32,8 +28,6 @@ export interface OpenSessionOptions {
      * resume/continue/sessionName flags. Caller owns any security implications.
      */
     extraArgs?: string[];
-    /** URL-discovery timeout. Default 60_000 (60s). */
-    startupTimeoutMs?: number;
 }
 
 /**
@@ -47,10 +41,6 @@ export function buildClaudeArgs(opts: OpenSessionOptions): string[] {
     else if (opts.sessionName) args.push(opts.sessionName);
     if (opts.extraArgs?.length) args.push(...opts.extraArgs);
     return args;
-}
-
-function looksLikeUuid(s: string | undefined): s is string {
-    return typeof s === "string" && UUID_RE.test(s);
 }
 
 function validateInputs(opts: OpenSessionOptions): void {
@@ -70,6 +60,21 @@ function validateInputs(opts: OpenSessionOptions): void {
     }
 }
 
+/**
+ * Launch claude --rc in the user's default OS terminal app.
+ *
+ * Behaves like a user typing `claude --rc` in a fresh shell: validates the
+ * workspace is trusted (via `~/.claude.json`), opens a new terminal window
+ * (macOS .command + open; Linux xdg-terminal-exec / x-terminal-emulator),
+ * and returns once the launcher has been dispatched. The session URL is
+ * not returned - claude displays it in the new terminal's TUI and the
+ * remote-control session shows up in the iOS app and at claude.ai/code.
+ *
+ * Throws WorkspaceNotTrustedError if the workspace is not trusted (run
+ * `claude` once in that directory to accept the trust dialog), or
+ * NoGUITerminalError on hosts without a GUI terminal launcher (use
+ * `claude --rc` directly in a shell instead).
+ */
 export async function openSession(opts: OpenSessionOptions): Promise<OpenSessionResult> {
     validateInputs(opts);
 
@@ -80,19 +85,10 @@ export async function openSession(opts: OpenSessionOptions): Promise<OpenSession
     const cmd = ["claude", ...buildClaudeArgs(opts)];
     const { handlerId } = await launchInDefaultTerminal({ cwd: opts.workspace, cmd });
 
-    const expectedSessionId = looksLikeUuid(opts.resume) ? opts.resume : undefined;
-    const { sessionUrl, sessionId } = await watchForSessionUrl({
-        workspace: opts.workspace,
-        timeoutMs: opts.startupTimeoutMs,
-        expectedSessionId,
-    });
-
     return {
         ...(opts.sessionName !== undefined && { sessionName: opts.sessionName }),
         ...(opts.resume !== undefined && { resumedSessionId: opts.resume }),
-        sessionUrl,
         workspace: opts.workspace,
         handlerId,
-        sessionId,
     };
 }

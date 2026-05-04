@@ -500,18 +500,21 @@ export interface XmlVerdict {
 /** Which classifier stage / mode a directive is being built for. */
 export type ClassifierStage = "s1" | "s2" | "single_fast" | "single_thinking";
 
-/** Result returned by openSession after a Claude Code instance starts with remote control active. */
+/**
+ * Result returned by openSession once the launcher has been dispatched.
+ *
+ * Note: the session URL is NOT included. claude --rc only writes the URL to
+ * disk after the user sends their first message; before that, the URL exists
+ * only in the spawned claude's TUI. Callers who need the URL should look at
+ * the new terminal window, the iOS app, or claude.ai/code's session listing.
+ */
 export interface OpenSessionResult {
-    /** Present only when the caller provided a sessionName for a new session. */
-    sessionName?: string;
-    /** Present only when the session was resumed. Echoes the value passed as `resume` verbatim. */
-    resumedSessionId?: string;
-    /** The https://claude.ai/code/session_xxx URL shown in the remote control UI. */
-    sessionUrl: string;
     /** The absolute workspace path used to start the session. */
     workspace: string;
     /** ID of the OS-handler that launched the session ("macos-default", "linux-xdg", "linux-alt"). */
     handlerId: string;
-    /** Resolved session ID parsed from the .jsonl filename observed by the watcher. */
-    sessionId: string;
+    /** Present only when the caller provided a sessionName for a new session. */
+    sessionName?: string;
+    /** Present only when the session was resumed. Echoes the value passed as `resume` verbatim. */
+    resumedSessionId?: string;
 }

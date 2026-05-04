@@ -16,6 +16,8 @@ export { isFastApprove, formatToolInput } from "./safety-redaction.js";
 
 const MAX_FILE_SIZE = 50_000; // bytes - skip files larger than this
 
+const READ_ONLY_TOOLS = new Set(["Read", "Grep", "Glob", "LS", "NotebookRead", "TodoWrite", "BashOutput", "WebSearch"]);
+
 // ---------------------------------------------------------------------------
 // Block count tracking for graceful degradation
 // ---------------------------------------------------------------------------
@@ -89,6 +91,43 @@ function extractTextContent(content: unknown): string {
         .join("\n");
 }
 
+function summarizeToolUse(block: Record<string, unknown>): string | null {
+    const name = block.name as string | undefined;
+    if (!name) return null;
+    if (READ_ONLY_TOOLS.has(name)) return null;
+    const input = block.input as Record<string, unknown> | undefined;
+    if (name === "Bash") {
+        const cmd = ((input?.command as string | undefined) ?? "").slice(0, 200);
+        return `[tool_use ${name}] ${cmd}`;
+    }
+    if (name === "Edit" || name === "Write") {
+        return `[tool_use ${name}] ${(input?.file_path as string | undefined) ?? ""}`;
+    }
+    if (name === "WebFetch") {
+        return `[tool_use ${name}] ${(input?.url as string | undefined) ?? ""}`;
+    }
+    if (name === "Agent") {
+        const t = (input?.subagent_type as string | undefined) ?? "general";
+        return `[tool_use ${name}/${t}]`;
+    }
+    return `[tool_use ${name}]`;
+}
+
+function extractAssistantContent(content: unknown, includeToolUse: boolean): string {
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return "";
+    const parts: string[] = [];
+    for (const block of content as Array<Record<string, unknown>>) {
+        if (block.type === "text" && typeof block.text === "string") {
+            parts.push(block.text);
+        } else if (includeToolUse && block.type === "tool_use") {
+            const summary = summarizeToolUse(block);
+            if (summary) parts.push(summary);
+        }
+    }
+    return parts.join("\n");
+}
+
 /**
  * Extract task context from the session transcript for the classifier.
  *
@@ -121,8 +160,8 @@ export function extractTaskContext(transcriptPath: string, contextLevel: "full" 
             const text = extractTextContent(entry.message?.content);
             if (text) entries.push({ role: "user", text });
         } else if (entry.type === "assistant" && contextLevel === "full") {
-            // For "full" mode, include assistant text (but not tool results)
-            const text = extractTextContent(entry.message?.content);
+            // For "full" mode, include assistant text and non-read-only tool_use blocks
+            const text = extractAssistantContent(entry.message?.content, true);
             if (text) entries.push({ role: "assistant", text });
         }
     }

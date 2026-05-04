@@ -1137,3 +1137,97 @@ describe("classifier mode selection", () => {
         vi.doUnmock("../utils.js");
     });
 });
+
+// ---------------------------------------------------------------------------
+// extractTaskContext with tool_use blocks
+// ---------------------------------------------------------------------------
+
+describe("extractTaskContext with tool_use blocks", () => {
+    let tmpFile: string;
+
+    beforeEach(() => {
+        tmpFile = path.join(os.tmpdir(), `transcript-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);
+        const lines = [
+            { type: "user", message: { content: "investigate the bug" } },
+            {
+                type: "assistant",
+                message: {
+                    content: [
+                        { type: "text", text: "Let me check" },
+                        { type: "tool_use", name: "Bash", input: { command: "git log --oneline | head -20" } },
+                    ],
+                },
+            },
+            {
+                type: "assistant",
+                message: {
+                    content: [{ type: "tool_use", name: "Edit", input: { file_path: "/etc/passwd", old_string: "x", new_string: "y" } }],
+                },
+            },
+            { type: "user", message: { content: "ok continue" } },
+        ];
+        fs.writeFileSync(tmpFile, lines.map((l) => JSON.stringify(l)).join("\n"));
+    });
+
+    afterEach(() => {
+        try {
+            fs.unlinkSync(tmpFile);
+        } catch {
+            /* ignore */
+        }
+    });
+
+    it("user-only level excludes tool_use blocks", () => {
+        const ctx = extractTaskContext(tmpFile, "user-only");
+        expect(ctx).toContain("investigate the bug");
+        expect(ctx).not.toContain("git log");
+        expect(ctx).not.toContain("/etc/passwd");
+    });
+
+    it("full level includes Edit tool_use with file_path", () => {
+        const ctx = extractTaskContext(tmpFile, "full");
+        expect(ctx).toContain("Edit");
+        expect(ctx).toContain("/etc/passwd");
+    });
+
+    it("full level includes Bash tool_use with command", () => {
+        const ctx = extractTaskContext(tmpFile, "full");
+        expect(ctx).toContain("Bash");
+        expect(ctx).toContain("git log");
+    });
+
+    it("full level includes assistant text alongside tool_use", () => {
+        const ctx = extractTaskContext(tmpFile, "full");
+        expect(ctx).toContain("Let me check");
+    });
+
+    it("none level returns empty string", () => {
+        expect(extractTaskContext(tmpFile, "none")).toBe("");
+    });
+
+    it("read-only tools (Read, Grep, Glob, LS, etc.) are filtered out at full level", () => {
+        const tmp2 = path.join(os.tmpdir(), `transcript-readonly-${Date.now()}.jsonl`);
+        const lines = [
+            { type: "user", message: { content: "explore" } },
+            {
+                type: "assistant",
+                message: {
+                    content: [
+                        { type: "tool_use", name: "Read", input: { file_path: "/some/file" } },
+                        { type: "tool_use", name: "Grep", input: { pattern: "TODO" } },
+                        { type: "tool_use", name: "Bash", input: { command: "make build" } },
+                    ],
+                },
+            },
+        ];
+        fs.writeFileSync(tmp2, lines.map((l) => JSON.stringify(l)).join("\n"));
+        try {
+            const ctx = extractTaskContext(tmp2, "full");
+            expect(ctx).toContain("make build");
+            expect(ctx).not.toContain("/some/file");
+            expect(ctx).not.toContain("TODO");
+        } finally {
+            fs.unlinkSync(tmp2);
+        }
+    });
+});

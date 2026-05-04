@@ -12,11 +12,36 @@ const POLL_INTERVAL_MS = 250;
 
 export interface OpenSessionOptions {
     workspace: string;
+    /** Display name for a new session. Mutually exclusive with `resume` and `continueLast`. */
     sessionName?: string;
+    /**
+     * Resume an existing session. Accepts a session UUID OR a session name (set via `/rename`
+     * inside Claude Code). Passed through to `claude --resume <value>` verbatim - claude itself
+     * resolves names to IDs. Mutually exclusive with `sessionName` and `continueLast`.
+     */
+    resume?: string;
+    /**
+     * Continue the most recent conversation in the workspace (`claude --continue`).
+     * Mutually exclusive with `sessionName` and `resume`.
+     */
+    continueLast?: boolean;
+}
+
+export function buildClaudeArgs(opts: OpenSessionOptions): string[] {
+    const args = ["--rc"];
+    if (opts.continueLast) args.push("--continue");
+    else if (opts.resume) args.push("--resume", opts.resume);
+    else if (opts.sessionName) args.push(opts.sessionName);
+    return args;
 }
 
 export async function openSession(opts: OpenSessionOptions): Promise<OpenSessionResult> {
-    const { workspace, sessionName } = opts;
+    const { workspace, sessionName, resume, continueLast } = opts;
+
+    const exclusiveCount = [sessionName, resume, continueLast].filter(Boolean).length;
+    if (exclusiveCount > 1) {
+        throw new Error("openSession: sessionName, resume, and continueLast are mutually exclusive");
+    }
 
     if (!path.isAbsolute(workspace)) {
         throw new Error("workspace must be an absolute path");
@@ -33,7 +58,7 @@ export async function openSession(opts: OpenSessionOptions): Promise<OpenSession
     }
 
     const tmuxSession = resolveTmuxName(sessionName);
-    return spawnSession(workspace, tmuxSession, sessionName);
+    return spawnSession(workspace, tmuxSession, opts);
 }
 
 function buildTmuxName(sessionName?: string): string {
@@ -65,9 +90,9 @@ function capturePane(tmuxSession: string): string {
     return r.stdout ?? "";
 }
 
-function spawnSession(workspace: string, tmuxSession: string, sessionName?: string): Promise<OpenSessionResult> {
+function spawnSession(workspace: string, tmuxSession: string, opts: OpenSessionOptions): Promise<OpenSessionResult> {
     return new Promise((resolve, reject) => {
-        const cmd = sessionName ? `claude --rc ${shellQuote(sessionName)}` : "claude --rc";
+        const cmd = ["claude", ...buildClaudeArgs(opts).map(shellQuote)].join(" ");
 
         const create = spawnSync("tmux", ["new-session", "-d", "-s", tmuxSession, "-c", workspace, "-x", "120", "-y", "40", cmd], {
             encoding: "utf8",
@@ -119,7 +144,8 @@ function spawnSession(workspace: string, tmuxSession: string, sessionName?: stri
                 clearInterval(interval);
                 clearTimeout(timer);
                 resolve({
-                    ...(sessionName !== undefined && { sessionName }),
+                    ...(opts.sessionName !== undefined && { sessionName: opts.sessionName }),
+                    ...(opts.resume !== undefined && { resumedSessionId: opts.resume }),
                     sessionUrl: match[0],
                     workspace,
                     tmuxSession,

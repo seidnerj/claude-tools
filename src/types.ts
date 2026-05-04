@@ -502,8 +502,10 @@ export type ClassifierStage = "s1" | "s2" | "single_fast" | "single_thinking";
 
 /** Result returned by openSession after a Claude Code instance starts with remote control active. */
 export interface OpenSessionResult {
-    /** Present only when the caller provided a sessionName. */
+    /** Present only when the caller provided a sessionName for a new session. */
     sessionName?: string;
+    /** Present only when the session was resumed. Echoes the value passed as `resume` (UUID or session name) verbatim. */
+    resumedSessionId?: string;
     /** The https://claude.ai/code/session_xxx URL shown in the remote control UI. */
     sessionUrl: string;
     /** The absolute workspace path used to start the session. */

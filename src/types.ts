@@ -490,6 +490,9 @@ export interface XmlVerdict {
     thinking?: string;
 }
 
+/** Which classifier stage / mode a directive is being built for. */
+export type ClassifierStage = "s1" | "s2" | "single_fast" | "single_thinking";
+
 /** Result returned by openSession after a Claude Code instance starts with remote control active. */
 export interface OpenSessionResult {
     /** Present only when the caller provided a sessionName. */

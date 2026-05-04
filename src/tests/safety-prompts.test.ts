@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildSystemPrompt, SYSTEM_PROMPT, parseXmlVerdict } from "../safety-prompts.js";
+import { buildSystemPrompt, SYSTEM_PROMPT, parseXmlVerdict, buildStageDirective } from "../safety-prompts.js";
 
 describe("buildSystemPrompt", () => {
     it("returns prompt with no user rules and replaces placeholders cleanly", () => {
@@ -96,5 +96,37 @@ describe("parseXmlVerdict", () => {
 
     it("matches <block>yes</block> with following whitespace correctly", () => {
         expect(parseXmlVerdict("<block>yes </block>").block).toBe("yes");
+    });
+});
+
+describe("buildStageDirective", () => {
+    it("S1 directive disables ALLOW exceptions and user intent", () => {
+        const d = buildStageDirective("s1");
+        expect(d.toLowerCase()).toContain("stage 1");
+        expect(d).toMatch(/do not apply (the )?allow exceptions/i);
+        expect(d).toMatch(/do not (apply|evaluate) user intent/i);
+        expect(d).toMatch(/<block>/);
+        expect(d).not.toMatch(/<thinking>/i);
+    });
+
+    it("S2 directive permits thinking and full evaluation", () => {
+        const d = buildStageDirective("s2");
+        expect(d.toLowerCase()).toContain("stage 2");
+        expect(d).toMatch(/full classification/i);
+        expect(d).toMatch(/json/i);
+    });
+
+    it("single_fast directive emits XML and biases toward blocking", () => {
+        const d = buildStageDirective("single_fast");
+        expect(d).toMatch(/<block>/);
+        expect(d).toMatch(/<reason>/);
+        expect(d).not.toMatch(/<thinking>/i);
+        expect(d).toMatch(/bias|err|prefer.*block/i);
+    });
+
+    it("single_thinking directive emits JSON and permits thinking", () => {
+        const d = buildStageDirective("single_thinking");
+        expect(d).toMatch(/json/i);
+        expect(d).not.toMatch(/<block>/i);
     });
 });

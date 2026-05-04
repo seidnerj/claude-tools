@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { approvalCache } from "../safety-cache.js";
 
 // Mock getApiKey and configGet before importing the module under test
 vi.mock("../utils.js", async (importOriginal) => {
@@ -40,7 +41,7 @@ import {
     resetConsecutiveBlocks,
     shouldDegradeToPrompt,
 } from "../llm-safety-check.js";
-import { getApiKey } from "../utils.js";
+import { getApiKey, configGetObject, configSetObject } from "../utils.js";
 
 const mockStat = vi.mocked(stat);
 const mockReadFile = vi.mocked(readFile);
@@ -56,11 +57,13 @@ const mockFetch = vi.fn();
 beforeEach(() => {
     vi.stubGlobal("fetch", mockFetch);
     mockGetApiKey.mockReturnValue(null);
+    approvalCache.clear();
 });
 
 afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    approvalCache.clear();
 });
 
 // ---------------------------------------------------------------------------
@@ -79,6 +82,21 @@ function mockApiResponse(decision: string, reason: string, files?: string[]) {
                 { type: "thinking", thinking: "..." },
                 { type: "text", text: JSON.stringify(payload) },
             ],
+        }),
+    };
+}
+
+/**
+ * Create a mock response for the S1 stage (XML format).
+ * "no" -> S1 approves (no escalation); "yes" -> S1 escalates to S2.
+ */
+function mockS1Response(block: "yes" | "no") {
+    return {
+        ok: true,
+        status: 200,
+        text: async () => "",
+        json: async () => ({
+            content: [{ type: "text", text: `<block>${block}</block>` }],
         }),
     };
 }
@@ -147,37 +165,46 @@ describe("checkCommandSafety", () => {
         expect(result).toBeNull();
     });
 
-    it("returns approve decision from API", async () => {
+    it("returns approve decision from API (S1 clears in two-stage default)", async () => {
         mockGetApiKey.mockReturnValue("test-key");
-        mockFetch.mockResolvedValueOnce(mockApiResponse("approve", "Safe read-only command"));
+        // Default mode is two-stage: S1 responds with XML approve
+        mockFetch.mockResolvedValueOnce(mockS1Response("no"));
 
         const result = await checkCommandSafety("Bash", { command: "ls -la", description: "List files" });
-        expect(result).toEqual({ decision: "approve", reason: "Safe read-only command" });
+        expect(result?.decision).toBe("approve");
 
-        // Verify the API was called with correct params
+        // S1 should be the only call
         expect(mockFetch).toHaveBeenCalledOnce();
         const [url, opts] = mockFetch.mock.calls[0];
         expect(url).toBe("https://api.anthropic.com/v1/messages?beta=true");
         expect(opts.headers["x-api-key"]).toBe("test-key");
 
+        // S1 body: 64-token budget, stop_sequences, no thinking
         const body = JSON.parse(opts.body);
         expect(body.model).toBe("claude-opus-4-6");
-        expect(body.thinking).toEqual({ type: "adaptive" });
-        const content = body.messages[0].content;
-        expect(content).toContain("<untrusted-command>");
-        expect(content).toContain("ls -la");
-        expect(content).toContain("</untrusted-command>");
-        expect(content).toContain("<untrusted-description>");
-        expect(content).toContain("List files");
-        expect(content).toContain("</untrusted-description>");
+        expect(body.max_tokens).toBe(64);
+        expect(body.stop_sequences).toEqual(["</block>"]);
+        expect(body.thinking).toBeUndefined();
+        const contentBlocks = body.messages[0].content;
+        const contentText = contentBlocks[contentBlocks.length - 1].text;
+        expect(contentText).toContain("<untrusted-command>");
+        expect(contentText).toContain("ls -la");
+        expect(contentText).toContain("</untrusted-command>");
+        expect(contentText).toContain("<untrusted-description>");
+        expect(contentText).toContain("List files");
+        expect(contentText).toContain("</untrusted-description>");
     });
 
-    it("returns deny decision from API", async () => {
+    it("returns deny decision from API (S1 escalates, S2 denies)", async () => {
         mockGetApiKey.mockReturnValue("test-key");
+        // S1 escalates (yes = needs S2 review)
+        mockFetch.mockResolvedValueOnce(mockS1Response("yes"));
+        // S2 denies
         mockFetch.mockResolvedValueOnce(mockApiResponse("deny", "Dangerous command"));
 
         const result = await checkCommandSafety("Bash", { command: "rm -rf /" });
         expect(result).toEqual({ decision: "deny", reason: "Dangerous command" });
+        expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
     it("returns null on API error", async () => {
@@ -196,8 +223,11 @@ describe("checkCommandSafety", () => {
         expect(result).toBeNull();
     });
 
-    it("handles markdown-wrapped JSON response", async () => {
+    it("handles markdown-wrapped JSON response (S1 escalates, S2 returns markdown JSON)", async () => {
         mockGetApiKey.mockReturnValue("test-key");
+        // S1 escalates to S2
+        mockFetch.mockResolvedValueOnce(mockS1Response("yes"));
+        // S2 returns markdown-wrapped JSON
         mockFetch.mockResolvedValueOnce({
             ok: true,
             json: async () => ({
@@ -207,80 +237,98 @@ describe("checkCommandSafety", () => {
 
         const result = await checkCommandSafety("Bash", { command: "curl example.com" });
         expect(result).toEqual({ decision: "prompt", reason: "Ambiguous" });
+        expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
-    it("performs two-pass when first call returns needs_context", async () => {
+    it("performs two-pass when first call returns needs_context (S1 escalates, S2 needs_context, S2 second pass)", async () => {
         mockGetApiKey.mockReturnValue("test-key");
 
-        // Pass 1: model asks for file contents
+        // S1: escalate to S2
+        mockFetch.mockResolvedValueOnce(mockS1Response("yes"));
+
+        // S2 first pass: model asks for file contents
         mockFetch.mockResolvedValueOnce(mockApiResponse("needs_context", "Need to inspect the script", ["/tmp/test.py"]));
 
         // File resolution
         mockStat.mockResolvedValueOnce({ isFile: () => true, size: 50 } as Awaited<ReturnType<typeof stat>>);
         mockReadFile.mockResolvedValueOnce("print('safe')" as never);
 
-        // Pass 2: model makes final decision with file contents
+        // S2 second pass: model makes final decision with file contents
         mockFetch.mockResolvedValueOnce(mockApiResponse("approve", "Script is safe"));
 
         const result = await checkCommandSafety("Bash", { command: "python3 /tmp/test.py" });
 
         expect(result).toEqual({ decision: "approve", reason: "Script is safe" });
-        expect(mockFetch).toHaveBeenCalledTimes(2);
+        expect(mockFetch).toHaveBeenCalledTimes(3);
 
-        // Verify second call includes file contents
-        const secondBody = JSON.parse(mockFetch.mock.calls[1][1].body);
-        const content = secondBody.messages[0].content;
-        expect(content).toContain("Referenced file contents (UNTRUSTED");
-        expect(content).toContain('<untrusted-file path="/tmp/test.py">');
-        expect(content).toContain("print('safe')");
+        // Verify third call includes file contents
+        const thirdBody = JSON.parse(mockFetch.mock.calls[2][1].body);
+        const thirdContentBlocks = thirdBody.messages[0].content;
+        const thirdContentText = thirdContentBlocks[thirdContentBlocks.length - 1].text;
+        expect(thirdContentText).toContain("Referenced file contents (UNTRUSTED");
+        expect(thirdContentText).toContain('<untrusted-file path="/tmp/test.py">');
+        expect(thirdContentText).toContain("print('safe')");
     });
 
-    it("handles needs_context with no files listed", async () => {
+    it("handles needs_context with no files listed (S1 escalates, S2 needs_context with no files)", async () => {
         mockGetApiKey.mockReturnValue("test-key");
+        // S1 escalates to S2
+        mockFetch.mockResolvedValueOnce(mockS1Response("yes"));
+        // S2 returns needs_context with no file list
         mockFetch.mockResolvedValueOnce(mockApiResponse("needs_context", "Ambiguous but no files to check"));
 
         const result = await checkCommandSafety("Bash", { command: "some-command" });
 
-        // Should return the needs_context result as-is without a second call
+        // Should return the needs_context result as-is without a third call
         expect(result).toEqual({ decision: "needs_context", reason: "Ambiguous but no files to check" });
-        expect(mockFetch).toHaveBeenCalledTimes(1);
+        expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
-    it("handles needs_context when requested files don't exist", async () => {
+    it("handles needs_context when requested files don't exist (S1 escalates, S2 needs_context, S2 second pass)", async () => {
         mockGetApiKey.mockReturnValue("test-key");
 
-        // Pass 1: model asks for file
+        // S1: escalate to S2
+        mockFetch.mockResolvedValueOnce(mockS1Response("yes"));
+
+        // S2 first pass: model asks for file
         mockFetch.mockResolvedValueOnce(mockApiResponse("needs_context", "Need the script", ["/tmp/missing.py"]));
 
         // File doesn't exist
         mockStat.mockRejectedValueOnce(new Error("ENOENT"));
 
-        // Pass 2: model decides without file contents
+        // S2 second pass: model decides without file contents
         mockFetch.mockResolvedValueOnce(mockApiResponse("prompt", "Script not found on disk"));
 
         const result = await checkCommandSafety("Bash", { command: "python3 /tmp/missing.py" });
 
         expect(result).toEqual({ decision: "prompt", reason: "Script not found on disk" });
-        expect(mockFetch).toHaveBeenCalledTimes(2);
+        expect(mockFetch).toHaveBeenCalledTimes(3);
 
-        // Second call should not include file contents section
-        const secondBody = JSON.parse(mockFetch.mock.calls[1][1].body);
-        expect(secondBody.messages[0].content).not.toContain("Referenced file contents");
+        // Third call should not include file contents section
+        const thirdBody = JSON.parse(mockFetch.mock.calls[2][1].body);
+        const noCtxBlocks = thirdBody.messages[0].content;
+        const noCtxText = noCtxBlocks[noCtxBlocks.length - 1].text;
+        expect(noCtxText).not.toContain("Referenced file contents");
     });
 
-    it("returns null when second pass API call fails", async () => {
+    it("returns null when second pass API call fails (S1 escalates, S2 needs_context, S2 second pass fails)", async () => {
         mockGetApiKey.mockReturnValue("test-key");
 
+        // S1: escalate to S2
+        mockFetch.mockResolvedValueOnce(mockS1Response("yes"));
+
+        // S2 first pass: needs file
         mockFetch.mockResolvedValueOnce(mockApiResponse("needs_context", "Need the script", ["/tmp/test.py"]));
 
         mockStat.mockResolvedValueOnce({ isFile: () => true, size: 50 } as Awaited<ReturnType<typeof stat>>);
         mockReadFile.mockResolvedValueOnce("content" as never);
 
-        // Second API call fails
+        // S2 second pass fails
         mockFetch.mockResolvedValueOnce({ ok: false, status: 500, text: async () => "Server Error" });
 
         const result = await checkCommandSafety("Bash", { command: "python3 /tmp/test.py" });
         expect(result).toBeNull();
+        expect(mockFetch).toHaveBeenCalledTimes(3);
     });
 });
 
@@ -293,17 +341,21 @@ describe("processHookInput", () => {
         mockGetApiKey.mockReturnValue("test-key");
     });
 
-    it("returns allow output for approve decision", async () => {
-        mockFetch.mockResolvedValueOnce(mockApiResponse("approve", "Safe command"));
+    it("returns allow output for approve decision (S1 clears)", async () => {
+        // S1 approves directly with XML response
+        mockFetch.mockResolvedValueOnce(mockS1Response("no"));
 
         const result = await processHookInput({
             tool_name: "Bash",
             tool_input: { command: "python3 script.py" },
         });
-        expect(result).toEqual({ decision: "allow", reason: "Safe command" });
+        expect(result?.decision).toBe("allow");
     });
 
-    it("returns deny output for deny decision", async () => {
+    it("returns deny output for deny decision (S1 escalates, S2 denies)", async () => {
+        // S1 escalates
+        mockFetch.mockResolvedValueOnce(mockS1Response("yes"));
+        // S2 denies
         mockFetch.mockResolvedValueOnce(mockApiResponse("deny", "Dangerous"));
 
         const result = await processHookInput({
@@ -313,7 +365,10 @@ describe("processHookInput", () => {
         expect(result).toEqual({ decision: "deny", reason: "Dangerous" });
     });
 
-    it("returns null for prompt decision (fall through)", async () => {
+    it("returns null for prompt decision (fall through, S1 escalates, S2 prompts)", async () => {
+        // S1 escalates
+        mockFetch.mockResolvedValueOnce(mockS1Response("yes"));
+        // S2 returns prompt
         mockFetch.mockResolvedValueOnce(mockApiResponse("prompt", "Ambiguous"));
 
         const result = await processHookInput({
@@ -323,8 +378,11 @@ describe("processHookInput", () => {
         expect(result).toBeNull();
     });
 
-    it("logs reason to stderr for prompt decision", async () => {
+    it("logs reason to stderr for prompt decision (S1 escalates, S2 prompts)", async () => {
         const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+        // S1 escalates
+        mockFetch.mockResolvedValueOnce(mockS1Response("yes"));
+        // S2 returns prompt with reason
         mockFetch.mockResolvedValueOnce(mockApiResponse("prompt", "Contains hardcoded credentials"));
 
         await processHookInput({
@@ -336,8 +394,11 @@ describe("processHookInput", () => {
         stderrSpy.mockRestore();
     });
 
-    it("does not log to stderr for prompt decision with empty reason", async () => {
+    it("does not log to stderr for prompt decision with empty reason (S1 escalates, S2 prompt empty)", async () => {
         const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+        // S1 escalates
+        mockFetch.mockResolvedValueOnce(mockS1Response("yes"));
+        // S2 returns prompt with empty reason
         mockFetch.mockResolvedValueOnce(mockApiResponse("prompt", ""));
 
         await processHookInput({
@@ -509,7 +570,8 @@ describe("isFastApprove", () => {
 describe("checkToolSafety multi-tool formatting", () => {
     beforeEach(() => {
         mockGetApiKey.mockReturnValue("test-key");
-        mockFetch.mockResolvedValue(mockApiResponse("approve", "Safe"));
+        // S1 approves via XML so the chain completes with one call
+        mockFetch.mockResolvedValue(mockS1Response("no"));
     });
 
     it("formats Edit tool input with file path and old/new strings", async () => {
@@ -520,13 +582,14 @@ describe("checkToolSafety multi-tool formatting", () => {
         });
 
         const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-        const content = body.messages[0].content;
-        expect(content).toContain("Tool: Edit");
-        expect(content).toContain("File: /project/src/foo.ts");
-        expect(content).toContain("<old_string>");
-        expect(content).toContain("old code");
-        expect(content).toContain("<new_string>");
-        expect(content).toContain("new code");
+        const contentBlocks = body.messages[0].content;
+        const contentText = contentBlocks[contentBlocks.length - 1].text;
+        expect(contentText).toContain("Tool: Edit");
+        expect(contentText).toContain("File: /project/src/foo.ts");
+        expect(contentText).toContain("<old_string>");
+        expect(contentText).toContain("old code");
+        expect(contentText).toContain("<new_string>");
+        expect(contentText).toContain("new code");
     });
 
     it("formats Write tool input with file path and content", async () => {
@@ -536,11 +599,12 @@ describe("checkToolSafety multi-tool formatting", () => {
         });
 
         const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-        const content = body.messages[0].content;
-        expect(content).toContain("Tool: Write");
-        expect(content).toContain("File: /project/new-file.ts");
-        expect(content).toContain("<content>");
-        expect(content).toContain("file content here");
+        const contentBlocks = body.messages[0].content;
+        const contentText = contentBlocks[contentBlocks.length - 1].text;
+        expect(contentText).toContain("Tool: Write");
+        expect(contentText).toContain("File: /project/new-file.ts");
+        expect(contentText).toContain("<content>");
+        expect(contentText).toContain("file content here");
     });
 
     it("formats WebFetch tool input with URL", async () => {
@@ -550,9 +614,10 @@ describe("checkToolSafety multi-tool formatting", () => {
         });
 
         const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-        const content = body.messages[0].content;
-        expect(content).toContain("Tool: WebFetch");
-        expect(content).toContain("URL: https://example.com/api");
+        const contentBlocks = body.messages[0].content;
+        const contentText = contentBlocks[contentBlocks.length - 1].text;
+        expect(contentText).toContain("Tool: WebFetch");
+        expect(contentText).toContain("URL: https://example.com/api");
     });
 
     it("formats Agent tool input with prompt and subagent type", async () => {
@@ -562,10 +627,11 @@ describe("checkToolSafety multi-tool formatting", () => {
         });
 
         const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-        const content = body.messages[0].content;
-        expect(content).toContain("Tool: Agent");
-        expect(content).toContain("Subagent type: Explore");
-        expect(content).toContain("search for files");
+        const contentBlocks = body.messages[0].content;
+        const contentText = contentBlocks[contentBlocks.length - 1].text;
+        expect(contentText).toContain("Tool: Agent");
+        expect(contentText).toContain("Subagent type: Explore");
+        expect(contentText).toContain("search for files");
     });
 
     it("formats MCP tool input as JSON", async () => {
@@ -575,10 +641,11 @@ describe("checkToolSafety multi-tool formatting", () => {
         });
 
         const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-        const content = body.messages[0].content;
-        expect(content).toContain("Tool: mcp__server__tool");
-        expect(content).toContain('"param1"');
-        expect(content).toContain('"value1"');
+        const contentBlocks = body.messages[0].content;
+        const contentText = contentBlocks[contentBlocks.length - 1].text;
+        expect(contentText).toContain("Tool: mcp__server__tool");
+        expect(contentText).toContain('"param1"');
+        expect(contentText).toContain('"value1"');
     });
 
     it("truncates large Write content", async () => {
@@ -589,9 +656,10 @@ describe("checkToolSafety multi-tool formatting", () => {
         });
 
         const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-        const content = body.messages[0].content;
-        expect(content).toContain("... (truncated)");
-        expect(content.length).toBeLessThan(largeContent.length);
+        const contentBlocks = body.messages[0].content;
+        const contentText = contentBlocks[contentBlocks.length - 1].text;
+        expect(contentText).toContain("... (truncated)");
+        expect(contentText.length).toBeLessThan(largeContent.length);
     });
 });
 
@@ -745,7 +813,20 @@ describe("block count tracking", () => {
 
     it("processHookInput degrades deny to prompt after threshold", async () => {
         mockGetApiKey.mockReturnValue("test-key");
-        mockFetch.mockResolvedValue(mockApiResponse("deny", "Dangerous"));
+        // Each invocation needs two fetch calls: S1 escalates (XML yes), S2 denies (JSON).
+        // Mock alternates: odd calls = S1 XML, even calls = S2 JSON deny.
+        let callCount = 0;
+        mockFetch.mockImplementation(() => {
+            callCount++;
+            const isS1 = callCount % 2 === 1;
+            const text = isS1 ? "<block>yes</block>" : '{"decision":"deny","reason":"Dangerous"}';
+            return Promise.resolve({
+                ok: true,
+                status: 200,
+                text: async () => "",
+                json: async () => ({ content: [{ type: "text", text }] }),
+            });
+        });
 
         const sessionId = `degrade-test-${Date.now()}`;
 
@@ -775,5 +856,452 @@ describe("block count tracking", () => {
         } catch {
             // ignore
         }
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Prompt caching
+// ---------------------------------------------------------------------------
+
+describe("prompt caching", () => {
+    beforeEach(() => {
+        mockGetApiKey.mockReturnValue("test-key");
+        // S1 approves via XML so the chain completes with one call
+        mockFetch.mockResolvedValue(mockS1Response("no"));
+    });
+
+    it("attaches cache_control to all system blocks", async () => {
+        await checkToolSafety("Bash", { command: "ls -la" });
+        expect(mockFetch).toHaveBeenCalled();
+        const body = JSON.parse((mockFetch.mock.calls[0][1] as RequestInit).body as string);
+        expect(body.system).toBeInstanceOf(Array);
+        expect(body.system.length).toBeGreaterThanOrEqual(2);
+        for (const block of body.system) {
+            expect(block.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+        }
+    });
+
+    it("attaches cache_control to action message block", async () => {
+        await checkToolSafety("Bash", { command: "ls -la" });
+        const body = JSON.parse((mockFetch.mock.calls[0][1] as RequestInit).body as string);
+        expect(body.messages).toHaveLength(1);
+        expect(body.messages[0].content).toBeInstanceOf(Array);
+        const lastBlock = body.messages[0].content[body.messages[0].content.length - 1];
+        expect(lastBlock.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// user rules end-to-end (regression for configGet string coercion bug)
+// ---------------------------------------------------------------------------
+
+describe("user rules end-to-end", () => {
+    let previousUserRules: unknown;
+
+    beforeEach(() => {
+        // Save any pre-existing safety.user_rules so we can restore it after the test
+        previousUserRules = configGetObject("safety.user_rules");
+        // Write a test user_rules object - this exercises configSetObject
+        configSetObject("safety.user_rules", { block_rules: ["TEST_RULE_BLOCK_MARKER"] });
+        mockGetApiKey.mockReturnValue("test-key");
+        // S1 approves via XML so the chain completes with one call
+        mockFetch.mockResolvedValue(mockS1Response("no"));
+    });
+
+    afterEach(() => {
+        // Restore original value (or delete the key by setting undefined/null)
+        if (previousUserRules === undefined) {
+            // Remove the key we added - write null to clear it
+            configSetObject("safety.user_rules", undefined);
+        } else {
+            configSetObject("safety.user_rules", previousUserRules);
+        }
+    });
+
+    it("includes user block_rules bullet in the system prompt sent to the API", async () => {
+        await checkToolSafety("Bash", { command: "ls" });
+
+        expect(mockFetch).toHaveBeenCalledOnce();
+        const body = JSON.parse((mockFetch.mock.calls[0][1] as RequestInit).body as string);
+
+        // system[0] is the billing header block, system[1] is the safety prompt text
+        expect(body.system).toBeInstanceOf(Array);
+        expect(body.system.length).toBeGreaterThanOrEqual(2);
+        const systemPromptText: string = body.system[1].text;
+        expect(systemPromptText).toContain("- TEST_RULE_BLOCK_MARKER");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// approval cache integration
+// ---------------------------------------------------------------------------
+
+describe("approval cache integration", () => {
+    beforeEach(() => {
+        approvalCache.clear();
+        mockGetApiKey.mockReturnValue("test-key");
+    });
+
+    afterEach(() => {
+        approvalCache.clear();
+    });
+
+    it("repeated identical Bash command skips the API on second call", async () => {
+        // S1 approves via XML - one fetch call total for the first invocation
+        const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    content: [{ type: "text", text: "<block>no</block>" }],
+                })
+            )
+        );
+
+        const r1 = await checkToolSafety("Bash", { command: "echo hello" });
+        const r2 = await checkToolSafety("Bash", { command: "echo hello" });
+        expect(r1?.decision).toBe("approve");
+        expect(r2?.decision).toBe("approve");
+        // Only one API call - the second is served from the approval cache
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("deny is not cached - second identical call hits API again", async () => {
+        // Each call: S1 escalates, S2 denies - two fetch calls per invocation
+        const fetchSpy = vi
+            .spyOn(globalThis, "fetch")
+            .mockResolvedValueOnce(new Response(JSON.stringify({ content: [{ type: "text", text: "<block>yes</block>" }] })))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ content: [{ type: "text", text: '{"decision":"deny","reason":"no"}' }] })))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ content: [{ type: "text", text: "<block>yes</block>" }] })))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ content: [{ type: "text", text: '{"decision":"deny","reason":"no"}' }] })));
+
+        const r1 = await checkToolSafety("Bash", { command: "rm -rf /" });
+        const r2 = await checkToolSafety("Bash", { command: "rm -rf /" });
+        expect(r1?.decision).toBe("deny");
+        expect(r2?.decision).toBe("deny");
+        // 4 calls total: 2 per invocation (S1 + S2), since deny is not cached
+        expect(fetchSpy).toHaveBeenCalledTimes(4);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// classifier mode selection
+// ---------------------------------------------------------------------------
+
+describe("classifier mode selection", () => {
+    let fetchSpy: ReturnType<typeof vi.spyOn>;
+    afterEach(() => {
+        vi.restoreAllMocks();
+        approvalCache.clear();
+    });
+    beforeEach(() => approvalCache.clear());
+
+    it("default mode is two-stage (S1 uses 64-token budget and stop_sequences)", async () => {
+        mockGetApiKey.mockReturnValue("test-key");
+        fetchSpy = vi
+            .spyOn(globalThis, "fetch")
+            .mockResolvedValue(new Response(JSON.stringify({ content: [{ type: "text", text: "<block>no</block>" }] })));
+        await checkToolSafety("Bash", { command: "rm something" });
+        const body = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
+        expect(body.max_tokens).toBe(64);
+        expect(body.stop_sequences).toEqual(["</block>"]);
+    });
+
+    it("needs_context two-pass: S1 escalates, S2 returns needs_context, second call resolves", async () => {
+        mockGetApiKey.mockReturnValue("test-key");
+        fetchSpy = vi
+            .spyOn(globalThis, "fetch")
+            .mockResolvedValueOnce(new Response(JSON.stringify({ content: [{ type: "text", text: "<block>yes</block>" }] })))
+            .mockResolvedValueOnce(
+                new Response(
+                    JSON.stringify({ content: [{ type: "text", text: '{"decision":"needs_context","reason":"check","files":["/tmp/script.sh"]}' }] })
+                )
+            )
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ content: [{ type: "text", text: '{"decision":"approve","reason":"ok after inspection"}' }] }))
+            );
+        const r = await checkToolSafety("Bash", { command: "./script.sh" });
+        expect(r?.decision).toBe("approve");
+        expect(fetchSpy).toHaveBeenCalledTimes(3);
+    });
+
+    it("single-stage thinking mode uses 4096 budget, no stop_sequences, has thinking", async () => {
+        vi.resetModules();
+        vi.doMock("../utils.js", async (importOriginal) => {
+            const actual = (await importOriginal()) as Record<string, unknown>;
+            return {
+                ...actual,
+                configGet: (k: string, d?: string) => {
+                    if (k === "safety.classifier_mode") return "single-stage";
+                    if (k === "safety.single_stage_variant") return "thinking";
+                    if (k === "safety.billing_cch") return "test";
+                    if (k === "safety.billing_cc_version") return "test.0";
+                    return d ?? null;
+                },
+                configGetObject: () => undefined,
+            };
+        });
+        fetchSpy = vi
+            .spyOn(globalThis, "fetch")
+            .mockResolvedValue(new Response(JSON.stringify({ content: [{ type: "text", text: '{"decision":"approve","reason":"ok"}' }] })));
+        const mod = await import("../llm-safety-check.js?single-thinking");
+        await mod.checkToolSafety("Bash", { command: "rm something" });
+        const body = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
+        expect(body.max_tokens).toBe(4096);
+        expect(body.stop_sequences).toBeUndefined();
+        expect(body.thinking).toEqual({ type: "adaptive" });
+        vi.doUnmock("../utils.js");
+    });
+
+    it("single-stage fast mode uses 256 budget, has stop_sequences, no thinking", async () => {
+        vi.resetModules();
+        vi.doMock("../utils.js", async (importOriginal) => {
+            const actual = (await importOriginal()) as Record<string, unknown>;
+            return {
+                ...actual,
+                configGet: (k: string, d?: string) => {
+                    if (k === "safety.classifier_mode") return "single-stage";
+                    if (k === "safety.single_stage_variant") return "fast";
+                    if (k === "safety.billing_cch") return "test";
+                    if (k === "safety.billing_cc_version") return "test.0";
+                    return d ?? null;
+                },
+                configGetObject: () => undefined,
+            };
+        });
+        fetchSpy = vi
+            .spyOn(globalThis, "fetch")
+            .mockResolvedValue(new Response(JSON.stringify({ content: [{ type: "text", text: "<block>no</block>" }] })));
+        const mod = await import("../llm-safety-check.js?single-fast");
+        await mod.checkToolSafety("Bash", { command: "rm something" });
+        const body = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
+        expect(body.max_tokens).toBe(256);
+        expect(body.stop_sequences).toEqual(["</block>"]);
+        expect(body.thinking).toBeUndefined();
+        vi.doUnmock("../utils.js");
+    });
+
+    it("invalid classifier_mode falls back to two-stage and warns", async () => {
+        vi.resetModules();
+        const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+        vi.doMock("../utils.js", async (importOriginal) => {
+            const actual = (await importOriginal()) as Record<string, unknown>;
+            return {
+                ...actual,
+                configGet: (k: string, d?: string) => {
+                    if (k === "safety.classifier_mode") return "three-stage";
+                    if (k === "safety.billing_cch") return "test";
+                    if (k === "safety.billing_cc_version") return "test.0";
+                    return d ?? null;
+                },
+                configGetObject: () => undefined,
+            };
+        });
+        fetchSpy = vi
+            .spyOn(globalThis, "fetch")
+            .mockResolvedValue(new Response(JSON.stringify({ content: [{ type: "text", text: "<block>no</block>" }] })));
+        mockGetApiKey.mockReturnValue("test-key");
+        const mod = await import("../llm-safety-check.js?invalid-mode=" + Date.now());
+        await mod.checkToolSafety("Bash", { command: "ls" });
+        const body = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
+        expect(body.max_tokens).toBe(64);
+        expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('unknown safety.classifier_mode "three-stage"'));
+        vi.doUnmock("../utils.js");
+    });
+
+    it("invalid single_stage_variant falls back to thinking and warns", async () => {
+        vi.resetModules();
+        const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+        vi.doMock("../utils.js", async (importOriginal) => {
+            const actual = (await importOriginal()) as Record<string, unknown>;
+            return {
+                ...actual,
+                configGet: (k: string, d?: string) => {
+                    if (k === "safety.classifier_mode") return "single-stage";
+                    if (k === "safety.single_stage_variant") return "blazing";
+                    if (k === "safety.billing_cch") return "test";
+                    if (k === "safety.billing_cc_version") return "test.0";
+                    return d ?? null;
+                },
+                configGetObject: () => undefined,
+            };
+        });
+        fetchSpy = vi
+            .spyOn(globalThis, "fetch")
+            .mockResolvedValue(new Response(JSON.stringify({ content: [{ type: "text", text: '{"decision":"approve","reason":"ok"}' }] })));
+        mockGetApiKey.mockReturnValue("test-key");
+        const mod = await import("../llm-safety-check.js?invalid-variant=" + Date.now());
+        await mod.checkToolSafety("Bash", { command: "ls" });
+        const body = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
+        expect(body.max_tokens).toBe(4096);
+        expect(body.thinking).toEqual({ type: "adaptive" });
+        expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('unknown safety.single_stage_variant "blazing"'));
+        vi.doUnmock("../utils.js");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// extractTaskContext with tool_use blocks
+// ---------------------------------------------------------------------------
+
+describe("extractTaskContext with tool_use blocks", () => {
+    let tmpFile: string;
+
+    beforeEach(() => {
+        tmpFile = path.join(os.tmpdir(), `transcript-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);
+        const lines = [
+            { type: "user", message: { content: "investigate the bug" } },
+            {
+                type: "assistant",
+                message: {
+                    content: [
+                        { type: "text", text: "Let me check" },
+                        { type: "tool_use", name: "Bash", input: { command: "git log --oneline | head -20" } },
+                    ],
+                },
+            },
+            {
+                type: "assistant",
+                message: {
+                    content: [{ type: "tool_use", name: "Edit", input: { file_path: "/etc/passwd", old_string: "x", new_string: "y" } }],
+                },
+            },
+            { type: "user", message: { content: "ok continue" } },
+        ];
+        fs.writeFileSync(tmpFile, lines.map((l) => JSON.stringify(l)).join("\n"));
+    });
+
+    afterEach(() => {
+        try {
+            fs.unlinkSync(tmpFile);
+        } catch {
+            /* ignore */
+        }
+    });
+
+    it("user-only level excludes tool_use blocks", () => {
+        const ctx = extractTaskContext(tmpFile, "user-only");
+        expect(ctx).toContain("investigate the bug");
+        expect(ctx).not.toContain("git log");
+        expect(ctx).not.toContain("/etc/passwd");
+    });
+
+    it("full level includes Edit tool_use with file_path", () => {
+        const ctx = extractTaskContext(tmpFile, "full");
+        expect(ctx).toContain("Edit");
+        expect(ctx).toContain("/etc/passwd");
+    });
+
+    it("full level includes Bash tool_use with command", () => {
+        const ctx = extractTaskContext(tmpFile, "full");
+        expect(ctx).toContain("Bash");
+        expect(ctx).toContain("git log");
+    });
+
+    it("full level includes assistant text alongside tool_use", () => {
+        const ctx = extractTaskContext(tmpFile, "full");
+        expect(ctx).toContain("Let me check");
+    });
+
+    it("none level returns empty string", () => {
+        expect(extractTaskContext(tmpFile, "none")).toBe("");
+    });
+
+    it("read-only tools (Read, Grep, Glob, LS, etc.) are filtered out at full level", () => {
+        const tmp2 = path.join(os.tmpdir(), `transcript-readonly-${Date.now()}.jsonl`);
+        const lines = [
+            { type: "user", message: { content: "explore" } },
+            {
+                type: "assistant",
+                message: {
+                    content: [
+                        { type: "tool_use", name: "Read", input: { file_path: "/some/file" } },
+                        { type: "tool_use", name: "Grep", input: { pattern: "TODO" } },
+                        { type: "tool_use", name: "Bash", input: { command: "make build" } },
+                    ],
+                },
+            },
+        ];
+        fs.writeFileSync(tmp2, lines.map((l) => JSON.stringify(l)).join("\n"));
+        try {
+            const ctx = extractTaskContext(tmp2, "full");
+            expect(ctx).toContain("make build");
+            expect(ctx).not.toContain("/some/file");
+            expect(ctx).not.toContain("TODO");
+        } finally {
+            fs.unlinkSync(tmp2);
+        }
+    });
+});
+
+// ---------------------------------------------------------------------------
+// fail_closed mode
+// ---------------------------------------------------------------------------
+
+describe("fail_closed mode", () => {
+    afterEach(() => {
+        vi.restoreAllMocks();
+        approvalCache.clear();
+    });
+    beforeEach(() => approvalCache.clear());
+
+    it("default fail-open: returns null on API error", async () => {
+        vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("err", { status: 500 }));
+        const { processHookInput } = await import("../llm-safety-check.js");
+        const out = await processHookInput({
+            tool_name: "Bash",
+            tool_input: { command: "weird-tool-not-fastpathed-12345" },
+            session_id: "fc-test-1",
+        });
+        expect(out).toBeNull();
+    });
+
+    it("fail_closed=true: returns deny on API error", async () => {
+        vi.doMock("../utils.js", async (importOriginal) => {
+            const actual = (await importOriginal()) as Record<string, unknown>;
+            return {
+                ...actual,
+                configGet: (k: string, d?: string) => {
+                    if (k === "safety.fail_closed") return "true";
+                    if (k === "safety.billing_cch") return "test";
+                    if (k === "safety.billing_cc_version") return "test.0";
+                    return d;
+                },
+                configGetObject: () => undefined,
+            };
+        });
+        vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("err", { status: 500 }));
+        const mod = await import("../llm-safety-check.js?fc=" + Date.now());
+        const out = await mod.processHookInput({
+            tool_name: "Bash",
+            tool_input: { command: "weird-tool-not-fastpathed-67890" },
+            session_id: "fc-test-2",
+        });
+        expect(out?.decision).toBe("deny");
+        expect(out?.reason).toMatch(/classifier (unavailable|failed)/i);
+        vi.doUnmock("../utils.js");
+    });
+
+    it("fail_closed=false (explicit): returns null on API error", async () => {
+        vi.doMock("../utils.js", async (importOriginal) => {
+            const actual = (await importOriginal()) as Record<string, unknown>;
+            return {
+                ...actual,
+                configGet: (k: string, d?: string) => {
+                    if (k === "safety.fail_closed") return "false";
+                    if (k === "safety.billing_cch") return "test";
+                    if (k === "safety.billing_cc_version") return "test.0";
+                    return d;
+                },
+                configGetObject: () => undefined,
+            };
+        });
+        vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("err", { status: 500 }));
+        const mod = await import("../llm-safety-check.js?fc-false=" + Date.now());
+        const out = await mod.processHookInput({
+            tool_name: "Bash",
+            tool_input: { command: "weird-tool-not-fastpathed-abcdef" },
+            session_id: "fc-test-3",
+        });
+        expect(out).toBeNull();
+        vi.doUnmock("../utils.js");
     });
 });

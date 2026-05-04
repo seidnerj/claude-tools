@@ -271,16 +271,35 @@ export interface HookOutput {
     additionalContext?: string;
 }
 
+export type ClassifierMode = "two-stage" | "single-stage";
+export type SingleStageVariant = "fast" | "thinking";
+
 /** Safety hook configuration stored in ~/.claude/key-config.json under "safety" */
 export interface SafetyConfig {
     model: string;
     context_level: "full" | "user-only" | "none";
+    classifier_mode?: ClassifierMode;
+    single_stage_variant?: SingleStageVariant;
+    fail_closed?: boolean;
+    user_rules?: SafetyUserRules;
 }
 
 /** Block count state for graceful degradation, persisted per session */
 export interface BlockState {
     consecutiveDenials: number;
     totalDenials: number;
+}
+
+/**
+ * User-supplied additions to the safety classifier rules. Each list is appended
+ * to the built-in BLOCK / ALLOW lists in the system prompt - no merge or
+ * sentinel logic. User rules are NOT sanitized; only trim() is applied. Treat
+ * this as trusted-source config (user-controlled, not network input).
+ */
+export interface SafetyUserRules {
+    block_rules?: string[];
+    allow_rules?: string[];
+    environment?: string[];
 }
 
 /** A single status update within an incident timeline */
@@ -467,6 +486,19 @@ export interface ChangelogVersionResult {
     /** All entries for that version */
     entries: ChangelogEntry[];
 }
+
+/** Parsed XML verdict from a single-stage-fast or two-stage-S1 classifier call. */
+export interface XmlVerdict {
+    /** "yes" if the model says block, "no" if it says allow, null on parse error. */
+    block: "yes" | "no" | null;
+    /** Optional reason text (only present in single-stage-fast or when explicitly emitted). */
+    reason?: string;
+    /** Optional thinking text (only present when stage permits thinking). */
+    thinking?: string;
+}
+
+/** Which classifier stage / mode a directive is being built for. */
+export type ClassifierStage = "s1" | "s2" | "single_fast" | "single_thinking";
 
 /** Result returned by openSession after a Claude Code instance starts with remote control active. */
 export interface OpenSessionResult {

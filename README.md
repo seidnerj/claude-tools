@@ -89,17 +89,32 @@ Requires `ANTHROPIC_API_KEY` env var or a key stored in macOS Keychain under "Cl
 ```json
 {
     "safety": {
-        "model": "claude-sonnet-4-6",
-        "context_level": "user-only"
+        "model": "claude-opus-4-6",
+        "context_level": "user-only",
+        "classifier_mode": "two-stage",
+        "single_stage_variant": "thinking",
+        "fail_closed": false,
+        "user_rules": {
+            "block_rules": ["No production deploys without ticket"],
+            "allow_rules": ["Reading from /opt/internal-docs"],
+            "environment": ["repo: github.com/org/proj", "internal API: api.corp.example"]
+        }
     }
 }
 ```
 
-- `model` - classifier model (default: `claude-sonnet-4-6`, matching Auto Mode)
+- `model` - classifier model (default: `claude-opus-4-6`)
 - `context_level` - transcript context sent to classifier:
     - `"none"` - no transcript access (maximum isolation)
-    - `"user-only"` (default) - user messages + tool call names (no assistant text or tool results)
-    - `"full"` - all message types except raw tool results
+    - `"user-only"` (default) - user messages only (no assistant text or tool calls)
+    - `"full"` - user + assistant text + prior tool_use blocks (read-only tools filtered)
+- `classifier_mode` (default `"two-stage"`) - `"two-stage"` runs a 64-token strict S1 gate then escalates ambiguous actions to a full S2 evaluation; `"single-stage"` runs one classifier call per action.
+- `single_stage_variant` (default `"thinking"`) - only used when `classifier_mode: "single-stage"`. `"thinking"` is JSON output with extended thinking enabled; `"fast"` is a 256-token XML verdict (`<block>yes/no</block>`) with stop-sequence truncation for minimum latency.
+- `fail_closed` (default `false`) - `true` denies the action when the classifier API is unavailable (for unattended/CI runs); `false` falls through to the standard CC permission prompt (the default, fail-open).
+- `user_rules` - extend the built-in BLOCK / ALLOW lists with project-specific rules and declare a trusted environment (repos, internal hosts, buckets) without editing the system prompt:
+    - `block_rules` - additional BLOCK conditions appended to the system prompt
+    - `allow_rules` - additional ALLOW exceptions appended to the system prompt
+    - `environment` - trusted infrastructure listed in the prompt's environment section
 
 ### LLM Safety Hook vs. Claude Code Auto Mode
 
@@ -107,13 +122,15 @@ Claude Code's [Auto Mode](https://docs.anthropic.com/en/docs/claude-code/securit
 
 #### Architecture
 
-|                                    | LLM Safety Hook                                                                                                                   | Auto Mode                                                                                                           |
-| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| **How it works**                   | `PreToolUse` hook that sends each tool action to a separate LLM call (Sonnet 4.6 default) with a dedicated security system prompt | Built-in classifier (Sonnet 4.6) that evaluates tool calls against the user's original request and task context     |
-| **Scope**                          | All tool types: Bash, Edit, Write, WebFetch, WebSearch, Agent, MCP tools                                                          | All tool types (Bash, file edits, MCP tools, etc.)                                                                  |
-| **Context provided to classifier** | Tool input + CLAUDE.md + configurable transcript context (none/user-only/full). Two-pass file inspection for Bash.                | User messages and tool calls, with Claude's own text and tool results stripped out. Also receives CLAUDE.md content |
-| **Decisions**                      | Approve, deny (hard block), or prompt (fall back to user). Graceful degradation after 3 consecutive or 20 total blocks.           | Auto-approve, block (Claude retries with alternative approach), or escalate to user after repeated blocks           |
-| **Customization**                  | Configurable model, context level, editable system prompt with BLOCK/ALLOW categories                                             | Configurable allow/deny rules and `autoMode.environment` trusted infrastructure settings                            |
+|                                    | LLM Safety Hook                                                                                                                                                                              | Auto Mode                                                                                                     |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| **How it works**                   | `PreToolUse` hook with two-stage classifier (default): 64-tok strict S1 gate, then 4096-tok S2 with extended thinking on escalate. Single-stage mode (fast or thinking) available via config | Built-in two-stage classifier (Sonnet/Opus 4.6) - same staging pattern, controlled by GrowthBook feature flag |
+| **Scope**                          | All tool types: Bash, Edit, Write, WebFetch, WebSearch, Agent, MCP tools                                                                                                                     | All tool types (Bash, file edits, MCP tools, etc.)                                                            |
+| **Context provided to classifier** | Tool input + CLAUDE.md + configurable transcript (none/user-only/full, with prior tool_use blocks at "full"). Two-pass `needs_context` file inspection (unique to this hook)                 | User text + prior tool_use blocks (read-only filtered) + CLAUDE.md. Fixed context shape, no isolation knob    |
+| **Cost optimization**              | 1h ephemeral prompt cache on system + CLAUDE.md + action blocks; in-session approval cache; per-tool input redaction registry; fast-path regex allowlist for routine read-only commands      | 1h ephemeral prompt cache; approval cache; per-tool input redaction                                           |
+| **Decisions**                      | Approve, deny (hard block), or prompt (fall back to user). Graceful degradation after 3 consecutive or 20 total denies                                                                       | Auto-approve, block (Claude retries with alternative approach), or escalate to user after repeated blocks     |
+| **Failure mode**                   | Configurable: `fail_closed: false` (default, falls through to user prompt) or `fail_closed: true` (denies on classifier failure for CI/unattended)                                           | Fail-closed - blocks on classifier unavailable                                                                |
+| **Customization**                  | Configurable model, context level, classifier mode, fail-closed, user-supplied BLOCK/ALLOW/environment rules via placeholder substitution; editable system prompt as a final escape hatch    | Configurable allow/deny rules and `autoMode.environment` trusted infrastructure settings                      |
 
 #### Availability
 
@@ -128,13 +145,17 @@ Claude Code's [Auto Mode](https://docs.anthropic.com/en/docs/claude-code/securit
 **LLM Safety Hook**
 
 - Works with API keys on any plan
-- Configurable context isolation (none/user-only/full) - at "none" level, classifier has zero visibility into the conversation
+- Two-stage classifier (default) with strict S1 gate + 1h ephemeral prompt cache - matches Auto Mode's effective steady-state cost profile
+- In-session approval cache - repeated identical actions skip the API call entirely
+- Per-tool input redaction registry - read-only tools (Read, Grep, Glob, etc.) skip classification entirely; per-tool default formatters for the rest
+- User-customizable BLOCK / ALLOW / environment rules via `safety.user_rules` config (no need to edit the system prompt source)
+- Configurable context isolation (none/user-only/full); at "none" the classifier sees only the action itself
+- Configurable fail-closed mode for CI / unattended runs
 - Hard deny capability - blocked commands cannot be retried or worked around
-- Two-pass file inspection - classifier can request file contents before deciding (unique to this hook)
-- Fully customizable system prompt, model, and evaluation logic
-- Fast-path for known-safe commands and local file edits (no API call)
-- Graceful degradation (3 consecutive or 20 total blocks -> falls back to user prompt)
-- Adds latency and API cost to non-fast-pathed tool calls
+- Two-pass `needs_context` file inspection - classifier can request file contents before deciding (unique to this hook)
+- Fast-path regex allowlist for routine read-only Bash commands (no API call)
+- Graceful degradation (3 consecutive / 20 total denies -> falls back to user prompt)
+- Adds latency and API cost to non-fast-pathed tool calls (mitigated significantly by caching + S1 gate)
 
 **Auto Mode**
 
@@ -147,7 +168,9 @@ Claude Code's [Auto Mode](https://docs.anthropic.com/en/docs/claude-code/securit
 
 #### Using Both Together
 
-`PreToolUse` hooks fire regardless of the permission mode, so both can run simultaneously. When combined, the safety hook acts as a defense-in-depth layer - Auto Mode handles broad permission management, while the hook provides an independent safety check with its own classifier, BLOCK/ALLOW rules, and two-pass file inspection.
+`PreToolUse` hooks fire regardless of the permission mode, so both can run simultaneously. The hook fires first; if it allows or denies, Auto Mode is short-circuited. If the hook returns `null` (prompt / API failure / degradation), Auto Mode then evaluates. When combined, the safety hook acts as a defense-in-depth layer - Auto Mode handles broad permission management, while the hook provides an independent safety check with its own classifier, hard-deny capability, `needs_context` file inspection, and customizable rules.
+
+For deeper technical detail on Auto Mode's internals (system prompt structure, S1/S2 staging, GrowthBook control, output formats, function names for re-verification), see [`docs/auto-mode-research.md`](docs/auto-mode-research.md).
 
 ## Library API
 

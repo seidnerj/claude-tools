@@ -49,6 +49,21 @@ export interface LlmSearchResult {
     analysis: string;
     /** Number of sessions that had keyword matches */
     hitCount: number;
+    /**
+     * Usage block from the LLM call, when the search dispatched one.
+     * Populated for callers that want to forward this to the parent CC
+     * session's spend accumulator via the MCP tool result's `_meta`
+     * (consumed by the out-of-process post-processor). Absent when the
+     * search short-circuits without an API call (e.g. zero hits).
+     */
+    usage?: {
+        input_tokens: number;
+        output_tokens: number;
+        cache_creation_input_tokens?: number;
+        cache_read_input_tokens?: number;
+    };
+    /** Model that served the LLM call. Absent when no API call was made. */
+    model?: string;
 }
 
 /** Options for text search across sessions */
@@ -243,6 +258,25 @@ export interface McpServerResult {
     server?: McpServerEntry;
 }
 
+/**
+ * Token usage from a Claude API response. Mirrors the Anthropic API's
+ * `response.usage` block shape. Optional cache fields default to 0 when
+ * absent.
+ */
+export interface ApiUsage {
+    input_tokens: number;
+    output_tokens: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+}
+
+/** A single classifier-stage API call's usage, captured for upstream forwarding. */
+export interface ApiUsageEntry {
+    /** Model name reported by the API response (not necessarily the requested model). */
+    model: string;
+    usage: ApiUsage;
+}
+
 /** LLM safety check decision */
 export interface SafetyCheckResult {
     decision: "approve" | "deny" | "prompt" | "needs_context";
@@ -250,6 +284,10 @@ export interface SafetyCheckResult {
     files?: string[];
     updatedInput?: Record<string, unknown>;
     additionalContext?: string;
+    /** Aggregated token usage across all classifier stages that produced this result. */
+    usage?: ApiUsage;
+    /** Model name from the LAST stage that ran (e.g. S2 if escalated, S1 if S1 closed). */
+    model?: string;
 }
 
 /** Input from the Claude Code hook system (PreToolUse) */
@@ -269,6 +307,15 @@ export interface HookOutput {
     reason: string;
     updatedInput?: Record<string, unknown>;
     additionalContext?: string;
+    /**
+     * Aggregated token usage across all classifier API calls that produced this
+     * output. Forwarded by the bin entry point to the top-level stdout JSON
+     * envelope so the out-of-process post-processor can route it into
+     * Claude Code's in-process spend accumulator.
+     */
+    usage?: ApiUsage;
+    /** Model name from the LAST classifier stage that ran. Forwarded alongside `usage`. */
+    model?: string;
 }
 
 export type ClassifierMode = "two-stage" | "single-stage";

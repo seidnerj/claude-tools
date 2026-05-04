@@ -7,9 +7,9 @@ import * as path from "node:path";
 import { readFile, stat } from "node:fs/promises";
 import * as os from "node:os";
 import { getApiKey, configGet } from "./utils.js";
-import type { SafetyCheckResult, HookInput, HookOutput, BlockState, ClassifierMode, SingleStageVariant } from "./types.js";
+import type { SafetyCheckResult, HookInput, HookOutput, BlockState, ClassifierMode, SingleStageVariant, ApiUsageEntry } from "./types.js";
 import { isFastApprove, formatToolInput } from "./safety-redaction.js";
-import { runStage, runTwoStage, runSingleStage } from "./safety-stages.js";
+import { runStage, runTwoStage, runSingleStage, aggregateUsage, lastModel } from "./safety-stages.js";
 import { approvalCache } from "./safety-cache.js";
 
 export { isFastApprove, formatToolInput } from "./safety-redaction.js";
@@ -314,6 +314,11 @@ export async function checkToolSafety(
 
     const claudeMd = readClaudeMd(options?.cwd) ?? undefined;
 
+    // Accumulator for per-stage usage/model. Each successful API call pushes
+    // one entry; we aggregate them onto the final result so the bin entry
+    // can forward the totals to the out-of-process post-processor.
+    const usageEntries: ApiUsageEntry[] = [];
+
     try {
         // Pass 1: initial assessment
         const firstMessage = buildUserMessage(toolName, toolInput, {
@@ -322,20 +327,21 @@ export async function checkToolSafety(
         });
         const firstResult =
             mode === "two-stage"
-                ? await runTwoStage(apiKey, firstMessage)
-                : await runSingleStage(apiKey, variant === "fast" ? "single_fast" : "single_thinking", firstMessage);
+                ? await runTwoStage(apiKey, firstMessage, undefined, usageEntries)
+                : await runSingleStage(apiKey, variant === "fast" ? "single_fast" : "single_thinking", firstMessage, undefined, usageEntries);
         if (!firstResult) return null;
 
         // If the model can decide without file contents, return immediately
         if (firstResult.decision !== "needs_context") {
-            if (firstResult.decision === "approve") approvalCache.set(toolName, toolInput, firstResult);
-            return firstResult;
+            const enriched = attachUsage(firstResult, usageEntries);
+            if (enriched.decision === "approve") approvalCache.set(toolName, toolInput, enriched);
+            return enriched;
         }
 
         // Pass 2: resolve requested files and re-evaluate (Bash only)
         // Skip S1 - go straight to the deeper stage (S2 in two-stage mode, single_thinking otherwise)
         const requestedPaths = firstResult.files ?? [];
-        if (requestedPaths.length === 0) return firstResult;
+        if (requestedPaths.length === 0) return attachUsage(firstResult, usageEntries);
 
         const files = await resolveRequestedFiles(requestedPaths);
         const secondMessage = buildUserMessage(toolName, toolInput, {
@@ -344,13 +350,26 @@ export async function checkToolSafety(
             claudeMd,
         });
         const secondStage: "s2" | "single_thinking" = mode === "two-stage" ? "s2" : "single_thinking";
-        const secondResult = await runStage(apiKey, secondStage, secondMessage);
-        if (secondResult?.decision === "approve") approvalCache.set(toolName, toolInput, secondResult);
-        return secondResult;
+        const secondResult = await runStage(apiKey, secondStage, secondMessage, undefined, usageEntries);
+        if (!secondResult) return null;
+        const enriched = attachUsage(secondResult, usageEntries);
+        if (enriched.decision === "approve") approvalCache.set(toolName, toolInput, enriched);
+        return enriched;
     } catch (e) {
         process.stderr.write(`LLM safety check failed: ${e instanceof Error ? e.message : String(e)}\n`);
         return null;
     }
+}
+
+/**
+ * Decorate a SafetyCheckResult with aggregated usage and the last-stage model
+ * from a list of per-stage entries. Returns the same result object when
+ * the list is empty (no API calls made).
+ */
+function attachUsage(result: SafetyCheckResult, entries: ApiUsageEntry[]): SafetyCheckResult {
+    const usage = aggregateUsage(entries);
+    if (!usage) return result;
+    return { ...result, usage, model: lastModel(entries) };
 }
 
 /** @deprecated Use checkToolSafety instead. Kept for backward compatibility with claude-tools-mcp. */
@@ -399,6 +418,8 @@ export async function processHookInput(input: HookInput): Promise<HookOutput | n
         return {
             decision: "allow",
             reason,
+            ...(result.usage && { usage: result.usage }),
+            ...(result.model && { model: result.model }),
         };
     } else if (decision === "deny") {
         // Track block count for graceful degradation
@@ -415,6 +436,8 @@ export async function processHookInput(input: HookInput): Promise<HookOutput | n
         return {
             decision: "deny",
             reason,
+            ...(result.usage && { usage: result.usage }),
+            ...(result.model && { model: result.model }),
         };
     }
     // "prompt" or "needs_context" (fallback) - fall through to normal permission dialog

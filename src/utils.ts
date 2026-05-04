@@ -200,13 +200,42 @@ export function requireApiKey(): string {
 // Claude API
 // ---------------------------------------------------------------------------
 
-/** Call the Claude API and return the text response. */
-export async function callClaude(
+/**
+ * Anthropic API usage block, mirroring the Messages API's `usage` field.
+ * Cache fields are present whenever ephemeral cache_control is in play.
+ */
+export interface AnthropicUsage {
+    input_tokens: number;
+    output_tokens: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+}
+
+/** Rich result from a Claude API call, including the usage block and the model that served the request. */
+export interface CallClaudeResult {
+    /** Concatenated text from the response's content blocks (trimmed). */
+    text: string;
+    /** Usage block from the response, or undefined if the API did not return one. */
+    usage?: AnthropicUsage;
+    /** Model that served the request (echoed by the API; falls back to the requested model). */
+    model: string;
+}
+
+/**
+ * Call the Claude API and return the text response plus usage metadata.
+ *
+ * Producers that want their out-of-process LLM costs to surface in the
+ * parent Claude Code session's spend accumulator can pass the returned
+ * `usage` and `model` through to the MCP `_meta` field on tool results
+ * (or to the hook output JSON envelope) - the `usage-meta-passthrough` ***
+ * gene picks them up from there. See ***.
+ */
+export async function callClaudeWithMeta(
     apiKey: string,
     model: string,
     messages: Array<{ role: string; content: string }>,
     maxTokens = 1024
-): Promise<string> {
+): Promise<CallClaudeResult> {
     const body = JSON.stringify({ model, max_tokens: maxTokens, messages });
 
     const resp = await fetch("https://api.anthropic.com/v1/messages", {
@@ -224,13 +253,35 @@ export async function callClaude(
         throw new Error(`Claude API error ${resp.status}: ${errorBody.slice(0, 200)}`);
     }
 
-    const data = (await resp.json()) as { content?: Array<{ type: string; text?: string }> };
+    const data = (await resp.json()) as {
+        content?: Array<{ type: string; text?: string }>;
+        usage?: AnthropicUsage;
+        model?: string;
+    };
     for (const block of data.content ?? []) {
         if (block.type === "text" && block.text) {
-            return block.text.trim();
+            return { text: block.text.trim(), usage: data.usage, model: data.model ?? model };
         }
     }
     throw new Error("No text content in Claude API response");
+}
+
+/**
+ * Call the Claude API and return only the text response.
+ *
+ * Thin convenience wrapper around `callClaudeWithMeta` for callers that
+ * don't need usage data. New code that wants to forward usage to the
+ * spend accumulator (via the out-of-process post-processor) should call
+ * `callClaudeWithMeta` directly.
+ */
+export async function callClaude(
+    apiKey: string,
+    model: string,
+    messages: Array<{ role: string; content: string }>,
+    maxTokens = 1024
+): Promise<string> {
+    const result = await callClaudeWithMeta(apiKey, model, messages, maxTokens);
+    return result.text;
 }
 
 // ---------------------------------------------------------------------------

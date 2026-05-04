@@ -48,11 +48,20 @@ async function main(): Promise<void> {
                 ...(result.additionalContext && { additionalContext: result.additionalContext }),
                 ...(result.updatedInput && { updatedInput: result.updatedInput }),
             },
+            // Top-level `usage` and `model` are read by the out-of-process post-processor
+            // out-of-process post-processor's hook-output parser and routed into
+            // CC's in-process spend accumulator. Omitted on fast-path hits.
+            ...(result.usage && { usage: result.usage }),
+            ...(result.model && { model: result.model }),
         };
         process.stdout.write(JSON.stringify(output) + "\n");
         process.exit(0);
     } else if (result.decision === "deny") {
         process.stderr.write(`Blocked by safety check: ${result.reason}\n`);
+        // Even though deny exits non-zero (no JSON envelope is produced for
+        // CC to parse), the API tokens spent reaching the deny verdict are
+        // visible to the caller via the HookOutput.usage/model fields above
+        // when wired into other transports.
         process.exit(2);
     }
 

@@ -70,7 +70,17 @@ afterEach(() => {
 // Helper to create a mock Claude API response
 // ---------------------------------------------------------------------------
 
-function mockApiResponse(decision: string, reason: string, files?: string[]) {
+interface MockUsageOptions {
+    usage?: {
+        input_tokens?: number;
+        output_tokens?: number;
+        cache_creation_input_tokens?: number;
+        cache_read_input_tokens?: number;
+    };
+    model?: string;
+}
+
+function mockApiResponse(decision: string, reason: string, files?: string[], opts?: MockUsageOptions) {
     const payload: Record<string, unknown> = { decision, reason };
     if (files) payload.files = files;
     return {
@@ -82,6 +92,8 @@ function mockApiResponse(decision: string, reason: string, files?: string[]) {
                 { type: "thinking", thinking: "..." },
                 { type: "text", text: JSON.stringify(payload) },
             ],
+            ...(opts?.usage && { usage: opts.usage }),
+            ...(opts?.model && { model: opts.model }),
         }),
     };
 }
@@ -90,13 +102,15 @@ function mockApiResponse(decision: string, reason: string, files?: string[]) {
  * Create a mock response for the S1 stage (XML format).
  * "no" -> S1 approves (no escalation); "yes" -> S1 escalates to S2.
  */
-function mockS1Response(block: "yes" | "no") {
+function mockS1Response(block: "yes" | "no", opts?: MockUsageOptions) {
     return {
         ok: true,
         status: 200,
         text: async () => "",
         json: async () => ({
             content: [{ type: "text", text: `<block>${block}</block>` }],
+            ...(opts?.usage && { usage: opts.usage }),
+            ...(opts?.model && { model: opts.model }),
         }),
     };
 }
@@ -203,7 +217,7 @@ describe("checkCommandSafety", () => {
         mockFetch.mockResolvedValueOnce(mockApiResponse("deny", "Dangerous command"));
 
         const result = await checkCommandSafety("Bash", { command: "rm -rf /" });
-        expect(result).toEqual({ decision: "deny", reason: "Dangerous command" });
+        expect(result).toMatchObject({ decision: "deny", reason: "Dangerous command" });
         expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
@@ -236,7 +250,7 @@ describe("checkCommandSafety", () => {
         });
 
         const result = await checkCommandSafety("Bash", { command: "curl example.com" });
-        expect(result).toEqual({ decision: "prompt", reason: "Ambiguous" });
+        expect(result).toMatchObject({ decision: "prompt", reason: "Ambiguous" });
         expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
@@ -258,7 +272,7 @@ describe("checkCommandSafety", () => {
 
         const result = await checkCommandSafety("Bash", { command: "python3 /tmp/test.py" });
 
-        expect(result).toEqual({ decision: "approve", reason: "Script is safe" });
+        expect(result).toMatchObject({ decision: "approve", reason: "Script is safe" });
         expect(mockFetch).toHaveBeenCalledTimes(3);
 
         // Verify third call includes file contents
@@ -280,7 +294,7 @@ describe("checkCommandSafety", () => {
         const result = await checkCommandSafety("Bash", { command: "some-command" });
 
         // Should return the needs_context result as-is without a third call
-        expect(result).toEqual({ decision: "needs_context", reason: "Ambiguous but no files to check" });
+        expect(result).toMatchObject({ decision: "needs_context", reason: "Ambiguous but no files to check" });
         expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
@@ -301,7 +315,7 @@ describe("checkCommandSafety", () => {
 
         const result = await checkCommandSafety("Bash", { command: "python3 /tmp/missing.py" });
 
-        expect(result).toEqual({ decision: "prompt", reason: "Script not found on disk" });
+        expect(result).toMatchObject({ decision: "prompt", reason: "Script not found on disk" });
         expect(mockFetch).toHaveBeenCalledTimes(3);
 
         // Third call should not include file contents section
@@ -362,7 +376,7 @@ describe("processHookInput", () => {
             tool_name: "Bash",
             tool_input: { command: "rm -rf /" },
         });
-        expect(result).toEqual({ decision: "deny", reason: "Dangerous" });
+        expect(result).toMatchObject({ decision: "deny", reason: "Dangerous" });
     });
 
     it("returns null for prompt decision (fall through, S1 escalates, S2 prompts)", async () => {
@@ -1303,5 +1317,178 @@ describe("fail_closed mode", () => {
         });
         expect(out).toBeNull();
         vi.doUnmock("../utils.js");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// usage / model passthrough
+//
+// The classifier emits the API call's `usage` block and `model` name on the
+// HookOutput so the bin entry can put them on the top-level stdout JSON.
+// The out-of-process post-processor reads those fields and forwards
+// them into Claude Code's in-process spend accumulator.
+// ---------------------------------------------------------------------------
+
+describe("usage and model passthrough", () => {
+    beforeEach(() => {
+        mockGetApiKey.mockReturnValue("test-key");
+        approvalCache.clear();
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+        approvalCache.clear();
+    });
+
+    it("attaches the API's usage and model to an S1-cleared approve result", async () => {
+        mockFetch.mockResolvedValueOnce(
+            mockS1Response("no", {
+                usage: {
+                    input_tokens: 1234,
+                    output_tokens: 7,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 8000,
+                },
+                model: "claude-opus-4-6",
+            })
+        );
+
+        const result = await checkToolSafety("Bash", { command: "ls -la" });
+        expect(result?.decision).toBe("approve");
+        expect(result?.usage).toEqual({
+            input_tokens: 1234,
+            output_tokens: 7,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 8000,
+        });
+        expect(result?.model).toBe("claude-opus-4-6");
+    });
+
+    it("sums per-stage token counts and reports the LAST stage's model on a two-stage deny", async () => {
+        // S1 escalates with its own usage block...
+        mockFetch.mockResolvedValueOnce(
+            mockS1Response("yes", {
+                usage: { input_tokens: 100, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 50 },
+                model: "claude-haiku-4-5",
+            })
+        );
+        // ...then S2 denies with its own usage block.
+        mockFetch.mockResolvedValueOnce(
+            mockApiResponse("deny", "Dangerous", undefined, {
+                usage: { input_tokens: 900, output_tokens: 60, cache_creation_input_tokens: 200, cache_read_input_tokens: 4000 },
+                model: "claude-opus-4-6",
+            })
+        );
+
+        const result = await checkToolSafety("Bash", { command: "rm -rf /" });
+        expect(result?.decision).toBe("deny");
+        expect(result?.usage).toEqual({
+            input_tokens: 1000, // 100 + 900
+            output_tokens: 65, // 5 + 60
+            cache_creation_input_tokens: 200, // 0 + 200
+            cache_read_input_tokens: 4050, // 50 + 4000
+        });
+        // Last stage's model wins; S2 was the most recent, opus.
+        expect(result?.model).toBe("claude-opus-4-6");
+    });
+
+    it("propagates usage and model onto the HookOutput from processHookInput on allow", async () => {
+        mockFetch.mockResolvedValueOnce(
+            mockS1Response("no", {
+                usage: { input_tokens: 50, output_tokens: 3, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+                model: "claude-sonnet-4-6",
+            })
+        );
+
+        const out = await processHookInput({
+            tool_name: "Bash",
+            // Non-fast-path command (echo/printf/ls/node -e/etc. bypass the
+            // LLM via the regex allowlist in safety-redaction.ts; curl is
+            // not in the allowlist so the LLM actually runs and emits usage).
+            tool_input: { command: "curl https://example.com" },
+        });
+        expect(out?.decision).toBe("allow");
+        expect(out?.usage).toEqual({
+            input_tokens: 50,
+            output_tokens: 3,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        });
+        expect(out?.model).toBe("claude-sonnet-4-6");
+    });
+
+    it("propagates usage and model onto the HookOutput from processHookInput on deny", async () => {
+        mockFetch.mockResolvedValueOnce(mockS1Response("yes", { usage: { input_tokens: 80, output_tokens: 4 }, model: "claude-haiku-4-5" }));
+        mockFetch.mockResolvedValueOnce(
+            mockApiResponse("deny", "Bad", undefined, { usage: { input_tokens: 700, output_tokens: 50 }, model: "claude-opus-4-6" })
+        );
+
+        const out = await processHookInput({
+            tool_name: "Bash",
+            tool_input: { command: "rm -rf /something" },
+        });
+        expect(out?.decision).toBe("deny");
+        expect(out?.usage?.input_tokens).toBe(780);
+        expect(out?.usage?.output_tokens).toBe(54);
+        expect(out?.model).toBe("claude-opus-4-6");
+    });
+
+    it("omits usage and model from HookOutput when the fast-path bypassed the LLM", async () => {
+        // `git status` is in the fast-approve allowlist, so no fetch happens.
+        const out = await processHookInput({
+            tool_name: "Bash",
+            tool_input: { command: "git status" },
+        });
+        expect(out?.decision).toBe("allow");
+        expect(out?.usage).toBeUndefined();
+        expect(out?.model).toBeUndefined();
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it("returns zero-token usage when the API response omits the usage block", async () => {
+        // No usage / model in the mock; callApi falls back to zeros and the
+        // requested model name. The accumulator still records ONE entry, so
+        // the result carries usage (all zeros) and the requested model.
+        mockFetch.mockResolvedValueOnce(mockS1Response("no"));
+
+        const result = await checkToolSafety("Bash", { command: "ls -la" });
+        expect(result?.decision).toBe("approve");
+        expect(result?.usage).toEqual({
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        });
+        // Default safety model from configGet mock; matches DEFAULT_SAFETY_MODEL.
+        expect(typeof result?.model).toBe("string");
+    });
+
+    it("includes usage from BOTH passes of a two-pass needs_context flow", async () => {
+        // S1 escalates
+        mockFetch.mockResolvedValueOnce(mockS1Response("yes", { usage: { input_tokens: 50, output_tokens: 2 }, model: "claude-haiku-4-5" }));
+        // S2 first pass: needs_context
+        mockFetch.mockResolvedValueOnce(
+            mockApiResponse("needs_context", "Inspect script", ["/tmp/test.py"], {
+                usage: { input_tokens: 800, output_tokens: 40 },
+                model: "claude-opus-4-6",
+            })
+        );
+        // File resolves
+        mockStat.mockResolvedValueOnce({ isFile: () => true, size: 50 } as Awaited<ReturnType<typeof stat>>);
+        mockReadFile.mockResolvedValueOnce("print('safe')" as never);
+        // S2 second pass: approve
+        mockFetch.mockResolvedValueOnce(
+            mockApiResponse("approve", "Safe", undefined, {
+                usage: { input_tokens: 950, output_tokens: 30 },
+                model: "claude-opus-4-6",
+            })
+        );
+
+        const result = await checkToolSafety("Bash", { command: "python3 /tmp/test.py" });
+        expect(result?.decision).toBe("approve");
+        // 50 + 800 + 950 = 1800 input, 2 + 40 + 30 = 72 output
+        expect(result?.usage?.input_tokens).toBe(1800);
+        expect(result?.usage?.output_tokens).toBe(72);
+        expect(result?.model).toBe("claude-opus-4-6");
     });
 });

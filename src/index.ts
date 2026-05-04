@@ -80,6 +80,7 @@ export {
     getApiKey,
     requireApiKey,
     callClaude,
+    callClaudeWithMeta,
     extractStrings,
     parseSession,
     sessionDescription,
@@ -95,6 +96,7 @@ export {
     HISTORY_FILE,
     DEFAULT_MODEL,
 } from "./utils.js";
+export type { AnthropicUsage, CallClaudeResult } from "./utils.js";
 export { exportSession, importSession } from "./share-session.js";
 export type { ExportOptions, ExportResult, ImportOptions, ImportResult } from "./share-session.js";
 export { parseChangelog, getVersion, diffVersions, searchChangelog, fetchChangelog, compareSemver } from "./changelog.js";

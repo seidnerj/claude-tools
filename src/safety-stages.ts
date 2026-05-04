@@ -7,8 +7,39 @@
 // ---------------------------------------------------------------------------
 
 import { configGet, configGetObject } from "./utils.js";
-import type { SafetyCheckResult, ClassifierStage, SafetyUserRules } from "./types.js";
+import type { SafetyCheckResult, ClassifierStage, SafetyUserRules, ApiUsage, ApiUsageEntry } from "./types.js";
 import { buildSystemPrompt, parseXmlVerdict, buildStageDirective } from "./safety-prompts.js";
+
+/**
+ * Sum a list of per-stage usage entries into one combined usage block. When
+ * the list is empty, returns undefined so the caller can omit the field.
+ * Cache fields are normalized: 0 is preserved (it carries information that
+ * caching ran but missed) but missing-on-input becomes 0 in the sum.
+ */
+export function aggregateUsage(entries: ApiUsageEntry[]): ApiUsage | undefined {
+    if (entries.length === 0) return undefined;
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let cacheCreate = 0;
+    let cacheRead = 0;
+    for (const entry of entries) {
+        inputTokens += entry.usage.input_tokens;
+        outputTokens += entry.usage.output_tokens;
+        cacheCreate += entry.usage.cache_creation_input_tokens ?? 0;
+        cacheRead += entry.usage.cache_read_input_tokens ?? 0;
+    }
+    return {
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        cache_creation_input_tokens: cacheCreate,
+        cache_read_input_tokens: cacheRead,
+    };
+}
+
+/** Model name from the LAST entry in a usage list, or undefined for empty list. */
+export function lastModel(entries: ApiUsageEntry[]): string | undefined {
+    return entries.length > 0 ? entries[entries.length - 1].model : undefined;
+}
 
 export const DEFAULT_SAFETY_MODEL = "claude-opus-4-6";
 const SAFETY_TIMEOUT_MS = 30_000;
@@ -51,11 +82,19 @@ function buildBillingHeaderBlock(): { type: string; text: string } | null {
     };
 }
 
+/** Result of a successful API call: the raw text plus usage metadata. */
+export interface CallApiResult {
+    text: string;
+    usage: ApiUsage;
+    /** Model name as reported by the API response. */
+    model: string;
+}
+
 /**
  * Make a single Anthropic API call for a given classifier stage.
- * Returns the raw text response or null on error.
+ * Returns text plus usage metadata on success, or null on error.
  */
-export async function callApi(apiKey: string, stage: ClassifierStage, userMessage: string, model?: string): Promise<string | null> {
+export async function callApi(apiKey: string, stage: ClassifierStage, userMessage: string, model?: string): Promise<CallApiResult | null> {
     const billingBlock = buildBillingHeaderBlock();
     if (!billingBlock) return null;
 
@@ -130,11 +169,24 @@ export async function callApi(apiKey: string, stage: ClassifierStage, userMessag
         return null;
     }
 
-    const data = (await resp.json()) as { content?: Array<{ type: string; text?: string }> };
+    const data = (await resp.json()) as {
+        content?: Array<{ type: string; text?: string }>;
+        usage?: ApiUsage;
+        model?: string;
+    };
+    let text: string | null = null;
     for (const block of data.content ?? []) {
-        if (block.type === "text" && block.text) return block.text.trim();
+        if (block.type === "text" && block.text) {
+            text = block.text.trim();
+            break;
+        }
     }
-    return null;
+    if (text === null) return null;
+    // The API echoes the model used in the response. Fall back to whatever the
+    // request asked for if for some reason the response omits it.
+    const responseModel = typeof data.model === "string" ? data.model : safetyModel;
+    const responseUsage: ApiUsage = data.usage ?? { input_tokens: 0, output_tokens: 0 };
+    return { text, usage: responseUsage, model: responseModel };
 }
 
 function parseJsonVerdict(text: string): SafetyCheckResult | null {
@@ -149,12 +201,27 @@ function parseJsonVerdict(text: string): SafetyCheckResult | null {
     }
 }
 
-/** Run a single classifier call and parse its output for the given stage. */
-export async function runStage(apiKey: string, stage: ClassifierStage, actionMessage: string, model?: string): Promise<SafetyCheckResult | null> {
+/**
+ * Run a single classifier call and parse its output for the given stage.
+ *
+ * If `usageOut` is provided, every successful API call pushes one
+ * `{model, usage}` entry to it. The caller can later aggregate these to
+ * report combined usage on the final SafetyCheckResult. Failed API calls
+ * (callApi returned null) push nothing.
+ */
+export async function runStage(
+    apiKey: string,
+    stage: ClassifierStage,
+    actionMessage: string,
+    model?: string,
+    usageOut?: ApiUsageEntry[]
+): Promise<SafetyCheckResult | null> {
     const directive = buildStageDirective(stage);
     const fullMessage = `${actionMessage}\n\n${directive}`;
-    const text = await callApi(apiKey, stage, fullMessage, model);
-    if (text === null) return null;
+    const apiResult = await callApi(apiKey, stage, fullMessage, model);
+    if (apiResult === null) return null;
+    if (usageOut) usageOut.push({ model: apiResult.model, usage: apiResult.usage });
+    const text = apiResult.text;
 
     if (stage === "s1" || stage === "single_fast") {
         const xml = parseXmlVerdict(text);
@@ -175,13 +242,18 @@ export async function runStage(apiKey: string, stage: ClassifierStage, actionMes
 }
 
 /** Two-stage classifier: S1 fast gate, then S2 on escalate. */
-export async function runTwoStage(apiKey: string, actionMessage: string, model?: string): Promise<SafetyCheckResult | null> {
-    const s1 = await runStage(apiKey, "s1", actionMessage, model);
+export async function runTwoStage(
+    apiKey: string,
+    actionMessage: string,
+    model?: string,
+    usageOut?: ApiUsageEntry[]
+): Promise<SafetyCheckResult | null> {
+    const s1 = await runStage(apiKey, "s1", actionMessage, model, usageOut);
     if (!s1) return null;
     if (s1.decision === "approve") return s1;
     if (s1.decision === "deny") return s1;
     // Anything else (including the S1_ESCALATE_SENTINEL) -> run S2
-    return runStage(apiKey, "s2", actionMessage, model);
+    return runStage(apiKey, "s2", actionMessage, model, usageOut);
 }
 
 /** Single-stage classifier (fast or thinking variant). */
@@ -189,7 +261,8 @@ export async function runSingleStage(
     apiKey: string,
     mode: "single_fast" | "single_thinking",
     actionMessage: string,
-    model?: string
+    model?: string,
+    usageOut?: ApiUsageEntry[]
 ): Promise<SafetyCheckResult | null> {
-    return runStage(apiKey, mode, actionMessage, model);
+    return runStage(apiKey, mode, actionMessage, model, usageOut);
 }

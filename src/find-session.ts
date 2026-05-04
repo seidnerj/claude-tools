@@ -25,7 +25,7 @@ import {
     pathToDirname,
     requireProjectsDir,
     sessionDescription,
-    callClaude,
+    callClaudeWithMeta,
     requireApiKey,
     DEFAULT_MODEL,
 } from "./utils.js";
@@ -527,8 +527,8 @@ export async function llmSearch(projectDirs: ProjectDir[], query: string, apiKey
         "Group results by project if multiple projects match. " +
         "Ignore noise matches (e.g. a term only in a directory listing or file path).";
 
-    const analysis = await callClaude(resolvedApiKey, resolvedModel, [{ role: "user", content: prompt }], 2048);
-    return { analysis, hitCount: allHits.length };
+    const result = await callClaudeWithMeta(resolvedApiKey, resolvedModel, [{ role: "user", content: prompt }], 2048);
+    return { analysis: result.text, hitCount: allHits.length, usage: result.usage, model: result.model };
 }
 
 /** LLM search across all projects. */

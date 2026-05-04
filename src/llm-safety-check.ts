@@ -16,6 +16,11 @@ export { isFastApprove, formatToolInput } from "./safety-redaction.js";
 
 const MAX_FILE_SIZE = 50_000; // bytes - skip files larger than this
 
+// Tools whose prior calls are noise in the transcript window: their historical
+// use is uninteresting to the classifier evaluating the CURRENT action. Note
+// the asymmetry with safety-redaction's TOOL_REDACTORS - WebSearch is filtered
+// from past transcripts here but is intentionally NOT fast-approved as a
+// current action, because a search query string can carry exfiltrated data.
 const READ_ONLY_TOOLS = new Set(["Read", "Grep", "Glob", "LS", "NotebookRead", "TodoWrite", "BashOutput", "WebSearch"]);
 
 // ---------------------------------------------------------------------------

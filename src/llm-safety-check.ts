@@ -376,7 +376,14 @@ export async function processHookInput(input: HookInput): Promise<HookOutput | n
         taskContext: taskContext || undefined,
     });
 
-    if (!result) return null;
+    const failClosed = String(configGet("safety.fail_closed", "false") || "false").toLowerCase() === "true";
+
+    if (!result) {
+        if (failClosed) {
+            return { decision: "deny", reason: "Safety classifier unavailable - blocking for safety (fail_closed mode)" };
+        }
+        return null;
+    }
 
     const decision = result.decision ?? "prompt";
     const reason = result.reason ?? "";

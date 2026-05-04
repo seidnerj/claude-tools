@@ -1231,3 +1231,77 @@ describe("extractTaskContext with tool_use blocks", () => {
         }
     });
 });
+
+// ---------------------------------------------------------------------------
+// fail_closed mode
+// ---------------------------------------------------------------------------
+
+describe("fail_closed mode", () => {
+    afterEach(() => {
+        vi.restoreAllMocks();
+        approvalCache.clear();
+    });
+    beforeEach(() => approvalCache.clear());
+
+    it("default fail-open: returns null on API error", async () => {
+        vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("err", { status: 500 }));
+        const { processHookInput } = await import("../llm-safety-check.js");
+        const out = await processHookInput({
+            tool_name: "Bash",
+            tool_input: { command: "weird-tool-not-fastpathed-12345" },
+            session_id: "fc-test-1",
+        });
+        expect(out).toBeNull();
+    });
+
+    it("fail_closed=true: returns deny on API error", async () => {
+        vi.doMock("../utils.js", async (importOriginal) => {
+            const actual = (await importOriginal()) as Record<string, unknown>;
+            return {
+                ...actual,
+                configGet: (k: string, d?: string) => {
+                    if (k === "safety.fail_closed") return "true";
+                    if (k === "safety.billing_cch") return "test";
+                    if (k === "safety.billing_cc_version") return "test.0";
+                    return d;
+                },
+                configGetObject: () => undefined,
+            };
+        });
+        vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("err", { status: 500 }));
+        const mod = await import("../llm-safety-check.js?fc=" + Date.now());
+        const out = await mod.processHookInput({
+            tool_name: "Bash",
+            tool_input: { command: "weird-tool-not-fastpathed-67890" },
+            session_id: "fc-test-2",
+        });
+        expect(out?.decision).toBe("deny");
+        expect(out?.reason).toMatch(/classifier (unavailable|failed)/i);
+        vi.doUnmock("../utils.js");
+    });
+
+    it("fail_closed=false (explicit): returns null on API error", async () => {
+        vi.doMock("../utils.js", async (importOriginal) => {
+            const actual = (await importOriginal()) as Record<string, unknown>;
+            return {
+                ...actual,
+                configGet: (k: string, d?: string) => {
+                    if (k === "safety.fail_closed") return "false";
+                    if (k === "safety.billing_cch") return "test";
+                    if (k === "safety.billing_cc_version") return "test.0";
+                    return d;
+                },
+                configGetObject: () => undefined,
+            };
+        });
+        vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("err", { status: 500 }));
+        const mod = await import("../llm-safety-check.js?fc-false=" + Date.now());
+        const out = await mod.processHookInput({
+            tool_name: "Bash",
+            tool_input: { command: "weird-tool-not-fastpathed-abcdef" },
+            session_id: "fc-test-3",
+        });
+        expect(out).toBeNull();
+        vi.doUnmock("../utils.js");
+    });
+});

@@ -2,7 +2,7 @@
 // System prompt + placeholder substitution + stage directives
 // ---------------------------------------------------------------------------
 
-import type { SafetyUserRules } from "./types.js";
+import type { SafetyUserRules, XmlVerdict } from "./types.js";
 
 export const SYSTEM_PROMPT = `You are a security classifier for an autonomous AI coding agent. You evaluate the agent's pending action and decide whether it should be allowed, blocked, or escalated to the user for review.
 
@@ -145,6 +145,35 @@ function renderRules(rules: string[] | undefined, fallback: string): string {
  * block/allow placeholders are removed entirely (empty string), and the
  * environment placeholder is replaced with a "none configured" line.
  */
+/**
+ * Parse the XML output emitted by single-stage-fast and two-stage-S1 classifier calls.
+ *
+ * Tolerant of: missing closing tag (stop_sequence truncation), surrounding whitespace,
+ * case differences in yes/no, and the optional <thinking> and <reason> tags.
+ *
+ * Returns block: null if no <block>yes|no</block> can be located.
+ */
+export function parseXmlVerdict(text: string): XmlVerdict {
+    const result: XmlVerdict = { block: null };
+
+    const blockMatch = text.match(/<block>\s*(yes|no)/i);
+    if (blockMatch) {
+        result.block = blockMatch[1].toLowerCase() as "yes" | "no";
+    }
+
+    const reasonMatch = text.match(/<reason>([\s\S]*?)<\/reason>/);
+    if (reasonMatch) {
+        result.reason = reasonMatch[1].trim();
+    }
+
+    const thinkingMatch = text.match(/<thinking>([\s\S]*?)<\/thinking>/);
+    if (thinkingMatch) {
+        result.thinking = thinkingMatch[1].trim();
+    }
+
+    return result;
+}
+
 export function buildSystemPrompt(userRules?: SafetyUserRules): string {
     const blockExtras = renderRules(userRules?.block_rules, "");
     const allowExtras = renderRules(userRules?.allow_rules, "");

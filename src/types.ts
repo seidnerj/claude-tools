@@ -480,6 +480,16 @@ export interface ChangelogVersionResult {
     entries: ChangelogEntry[];
 }
 
+/** Parsed XML verdict from a single-stage-fast or two-stage-S1 classifier call. */
+export interface XmlVerdict {
+    /** "yes" if the model says block, "no" if it says allow, null on parse error. */
+    block: "yes" | "no" | null;
+    /** Optional reason text (only present in single-stage-fast or when explicitly emitted). */
+    reason?: string;
+    /** Optional thinking text (only present when stage permits thinking). */
+    thinking?: string;
+}
+
 /** Result returned by openSession after a Claude Code instance starts with remote control active. */
 export interface OpenSessionResult {
     /** Present only when the caller provided a sessionName. */

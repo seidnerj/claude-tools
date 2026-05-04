@@ -7,21 +7,22 @@ vi.mock("node:fs/promises", () => ({
     chmod: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("node:fs", () => ({
+    existsSync: vi.fn().mockReturnValue(false),
+}));
+
 vi.mock("node:child_process", () => ({
     spawnSync: vi.fn().mockReturnValue({ status: 0 }),
 }));
 
 import * as fsPromises from "node:fs/promises";
+import * as fsSync from "node:fs";
 import * as childProcess from "node:child_process";
-import {
-    detectTerminalHandler,
-    launchInDefaultTerminal,
-    NoGUITerminalError,
-    TerminalLaunchError,
-} from "../terminal-launcher.js";
+import { detectTerminalHandler, launchInDefaultTerminal, NoGUITerminalError, TerminalLaunchError } from "../terminal-launcher.js";
 
 const spawnSyncMock = vi.mocked(childProcess.spawnSync);
 const writeFileMock = vi.mocked(fsPromises.writeFile);
+const existsSyncMock = vi.mocked(fsSync.existsSync);
 
 describe("detectTerminalHandler", () => {
     let originalPlatform: NodeJS.Platform;
@@ -29,6 +30,7 @@ describe("detectTerminalHandler", () => {
     beforeEach(() => {
         originalPlatform = process.platform;
         spawnSyncMock.mockReturnValue({ status: 0 } as ReturnType<typeof childProcess.spawnSync>);
+        existsSyncMock.mockReturnValue(false);
     });
 
     afterEach(() => {
@@ -40,8 +42,15 @@ describe("detectTerminalHandler", () => {
         Object.defineProperty(process, "platform", { value: p });
     }
 
-    it("selects macos-default on darwin", () => {
+    it("selects macos-iterm on darwin when iTerm.app is installed", () => {
         setPlatform("darwin");
+        existsSyncMock.mockImplementation((p: fsSync.PathLike) => String(p).endsWith("/iTerm.app"));
+        expect(detectTerminalHandler()?.id).toBe("macos-iterm");
+    });
+
+    it("falls back to macos-default on darwin when iTerm.app is not installed", () => {
+        setPlatform("darwin");
+        existsSyncMock.mockReturnValue(false);
         expect(detectTerminalHandler()?.id).toBe("macos-default");
     });
 
@@ -89,6 +98,7 @@ describe("launchInDefaultTerminal - macOS", () => {
         Object.defineProperty(process, "platform", { value: "darwin" });
         spawnSyncMock.mockReturnValue({ status: 0 } as ReturnType<typeof childProcess.spawnSync>);
         writeFileMock.mockResolvedValue(undefined);
+        existsSyncMock.mockReturnValue(false);
     });
 
     afterEach(() => {
@@ -96,7 +106,7 @@ describe("launchInDefaultTerminal - macOS", () => {
         vi.clearAllMocks();
     });
 
-    it("writes a .command launcher script and calls open", async () => {
+    it("writes a .command launcher script and calls open (no -b flag) when iTerm is absent", async () => {
         const result = await launchInDefaultTerminal({
             cwd: "/path/to/workspace",
             cmd: ["claude", "--rc"],
@@ -119,7 +129,24 @@ describe("launchInDefaultTerminal - macOS", () => {
         expect(openCall![1]).toEqual([launcherPath]);
     });
 
-    it("throws TerminalLaunchError when open exits non-zero", async () => {
+    it("writes the .command and calls open -b com.googlecode.iterm2 when iTerm is installed", async () => {
+        existsSyncMock.mockImplementation((p: fsSync.PathLike) => String(p).endsWith("/iTerm.app"));
+
+        const result = await launchInDefaultTerminal({
+            cwd: "/path/to/workspace",
+            cmd: ["claude", "--rc"],
+        });
+
+        expect(result.handlerId).toBe("macos-iterm");
+
+        const launcherPath = writeFileMock.mock.calls[0][0] as string;
+        const openCall = spawnSyncMock.mock.calls.find((c) => c[0] === "open");
+        expect(openCall).toBeDefined();
+        expect(openCall![1]).toEqual(["-b", "com.googlecode.iterm2", launcherPath]);
+    });
+
+    it("throws TerminalLaunchError when open exits non-zero (iTerm absent)", async () => {
+        existsSyncMock.mockReturnValue(false);
         spawnSyncMock.mockImplementation(((cmd: string) => {
             if (cmd === "open") return { status: 1, stderr: Buffer.from("LSOpenURLs failed") } as ReturnType<typeof childProcess.spawnSync>;
             return { status: 0 } as ReturnType<typeof childProcess.spawnSync>;
@@ -128,6 +155,19 @@ describe("launchInDefaultTerminal - macOS", () => {
         await expect(launchInDefaultTerminal({ cwd: "/x", cmd: ["claude", "--rc"] })).rejects.toMatchObject({
             name: "TerminalLaunchError",
             handlerId: "macos-default",
+        });
+    });
+
+    it("throws TerminalLaunchError with macos-iterm handlerId when iTerm path fails", async () => {
+        existsSyncMock.mockImplementation((p: fsSync.PathLike) => String(p).endsWith("/iTerm.app"));
+        spawnSyncMock.mockImplementation(((cmd: string) => {
+            if (cmd === "open") return { status: 1, stderr: Buffer.from("not allowed") } as ReturnType<typeof childProcess.spawnSync>;
+            return { status: 0 } as ReturnType<typeof childProcess.spawnSync>;
+        }) as typeof childProcess.spawnSync);
+
+        await expect(launchInDefaultTerminal({ cwd: "/x", cmd: ["claude", "--rc"] })).rejects.toMatchObject({
+            name: "TerminalLaunchError",
+            handlerId: "macos-iterm",
         });
     });
 });

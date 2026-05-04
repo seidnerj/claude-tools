@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { approvalCache } from "../safety-cache.js";
 
 // Mock getApiKey and configGet before importing the module under test
 vi.mock("../utils.js", async (importOriginal) => {
@@ -56,11 +57,13 @@ const mockFetch = vi.fn();
 beforeEach(() => {
     vi.stubGlobal("fetch", mockFetch);
     mockGetApiKey.mockReturnValue(null);
+    approvalCache.clear();
 });
 
 afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    approvalCache.clear();
 });
 
 // ---------------------------------------------------------------------------
@@ -856,5 +859,50 @@ describe("user rules end-to-end", () => {
         expect(body.system.length).toBeGreaterThanOrEqual(2);
         const systemPromptText: string = body.system[1].text;
         expect(systemPromptText).toContain("- TEST_RULE_BLOCK_MARKER");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// approval cache integration
+// ---------------------------------------------------------------------------
+
+describe("approval cache integration", () => {
+    beforeEach(() => {
+        approvalCache.clear();
+        mockGetApiKey.mockReturnValue("test-key");
+    });
+
+    afterEach(() => {
+        approvalCache.clear();
+    });
+
+    it("repeated identical Bash command skips the API on second call", async () => {
+        const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    content: [{ type: "text", text: '{"decision":"approve","reason":"ok"}' }],
+                })
+            )
+        );
+
+        const r1 = await checkToolSafety("Bash", { command: "echo hello" });
+        const r2 = await checkToolSafety("Bash", { command: "echo hello" });
+        expect(r1?.decision).toBe("approve");
+        expect(r2?.decision).toBe("approve");
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("deny is not cached - second identical call hits API again", async () => {
+        const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    content: [{ type: "text", text: '{"decision":"deny","reason":"no"}' }],
+                })
+            )
+        );
+
+        await checkToolSafety("Bash", { command: "rm -rf /" });
+        await checkToolSafety("Bash", { command: "rm -rf /" });
+        expect(fetchSpy).toHaveBeenCalledTimes(2);
     });
 });

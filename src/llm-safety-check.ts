@@ -10,6 +10,7 @@ import { getApiKey, configGet, configGetObject } from "./utils.js";
 import type { SafetyCheckResult, HookInput, HookOutput, BlockState, SafetyUserRules } from "./types.js";
 import { buildSystemPrompt } from "./safety-prompts.js";
 import { isFastApprove, formatToolInput } from "./safety-redaction.js";
+import { approvalCache } from "./safety-cache.js";
 
 export { isFastApprove, formatToolInput } from "./safety-redaction.js";
 
@@ -384,6 +385,9 @@ export async function checkToolSafety(
         return null;
     }
 
+    const cached = approvalCache.get(toolName, toolInput);
+    if (cached) return cached;
+
     const claudeMd = readClaudeMd(options?.cwd) ?? undefined;
 
     try {
@@ -396,7 +400,10 @@ export async function checkToolSafety(
         if (!firstResult) return null;
 
         // If the model can decide without file contents, return immediately
-        if (firstResult.decision !== "needs_context") return firstResult;
+        if (firstResult.decision !== "needs_context") {
+            if (firstResult.decision === "approve") approvalCache.set(toolName, toolInput, firstResult);
+            return firstResult;
+        }
 
         // Pass 2: resolve requested files and re-evaluate (Bash only)
         const requestedPaths = firstResult.files ?? [];
@@ -408,7 +415,9 @@ export async function checkToolSafety(
             taskContext: options?.taskContext,
             claudeMd,
         });
-        return await callSafetyModel(apiKey, secondMessage);
+        const secondResult = await callSafetyModel(apiKey, secondMessage);
+        if (secondResult?.decision === "approve") approvalCache.set(toolName, toolInput, secondResult);
+        return secondResult;
     } catch (e) {
         process.stderr.write(`LLM safety check failed: ${e instanceof Error ? e.message : String(e)}\n`);
         return null;

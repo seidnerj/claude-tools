@@ -81,4 +81,20 @@ describe("parseXmlVerdict", () => {
     it("returns block: null when only thinking is present (no <block>)", () => {
         expect(parseXmlVerdict("<thinking>contemplating</thinking>").block).toBeNull();
     });
+
+    it("does not match <block>nope</block> as no", () => {
+        expect(parseXmlVerdict("<block>nope</block>").block).toBeNull();
+    });
+
+    it("does not match <block>yesno</block> as yes", () => {
+        expect(parseXmlVerdict("<block>yesno</block>").block).toBeNull();
+    });
+
+    it("does not match <block>notion</block> as no", () => {
+        expect(parseXmlVerdict("<block>notion</block>").block).toBeNull();
+    });
+
+    it("matches <block>yes</block> with following whitespace correctly", () => {
+        expect(parseXmlVerdict("<block>yes </block>").block).toBe("yes");
+    });
 });

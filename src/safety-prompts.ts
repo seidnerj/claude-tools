@@ -140,12 +140,6 @@ function renderRules(rules: string[] | undefined, fallback: string): string {
 }
 
 /**
- * Build the system prompt with user-customizable rules merged in.
- * Placeholders in the base prompt are replaced; if no user rules are supplied,
- * block/allow placeholders are removed entirely (empty string), and the
- * environment placeholder is replaced with a "none configured" line.
- */
-/**
  * Parse the XML output emitted by single-stage-fast and two-stage-S1 classifier calls.
  *
  * Tolerant of: missing closing tag (stop_sequence truncation), surrounding whitespace,
@@ -156,7 +150,7 @@ function renderRules(rules: string[] | undefined, fallback: string): string {
 export function parseXmlVerdict(text: string): XmlVerdict {
     const result: XmlVerdict = { block: null };
 
-    const blockMatch = text.match(/<block>\s*(yes|no)/i);
+    const blockMatch = text.match(/<block>\s*(yes|no)(?:\s|<|$)/i);
     if (blockMatch) {
         result.block = blockMatch[1].toLowerCase() as "yes" | "no";
     }
@@ -174,6 +168,12 @@ export function parseXmlVerdict(text: string): XmlVerdict {
     return result;
 }
 
+/**
+ * Build the system prompt with user-customizable rules merged in.
+ * Placeholders in the base prompt are replaced; if no user rules are supplied,
+ * block/allow placeholders are removed entirely (empty string), and the
+ * environment placeholder is replaced with a "none configured" line.
+ */
 export function buildSystemPrompt(userRules?: SafetyUserRules): string {
     const blockExtras = renderRules(userRules?.block_rules, "");
     const allowExtras = renderRules(userRules?.allow_rules, "");

@@ -14,7 +14,7 @@ vi.mock("../utils.js", async (importOriginal) => {
     };
 });
 
-import { runStage, runTwoStage } from "../safety-stages.js";
+import { runStage, runTwoStage, S1_ESCALATE_SENTINEL } from "../safety-stages.js";
 
 function mockFetchOnce(text: string, status = 200) {
     return vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({ content: [{ type: "text", text }] }), { status }));
@@ -33,7 +33,7 @@ describe("runStage", () => {
         mockFetchOnce("<block>yes</block>");
         const r = await runStage("k", "s1", "Bash: rm -rf /");
         expect(r?.decision).toBe("needs_context");
-        expect(r?.reason).toBe("__S1_ESCALATE__");
+        expect(r?.reason).toBe(S1_ESCALATE_SENTINEL);
     });
 
     it("S1 sets max_tokens=64 and stop_sequences=[</block>]", async () => {
@@ -107,6 +107,18 @@ describe("runStage", () => {
     it("returns null on unparseable XML for single_fast", async () => {
         mockFetchOnce("not xml");
         const r = await runStage("k", "single_fast", "x");
+        expect(r).toBeNull();
+    });
+
+    it("returns null when fetch is aborted (timeout)", async () => {
+        vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new DOMException("aborted", "AbortError"));
+        const r = await runStage("k", "single_thinking", "x");
+        expect(r).toBeNull();
+    });
+
+    it("returns null on network error", async () => {
+        vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new Error("network unreachable"));
+        const r = await runStage("k", "single_thinking", "x");
         expect(r).toBeNull();
     });
 });

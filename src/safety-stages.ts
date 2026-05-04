@@ -13,23 +13,24 @@ import { buildSystemPrompt, parseXmlVerdict, buildStageDirective } from "./safet
 export const DEFAULT_SAFETY_MODEL = "claude-opus-4-6";
 const SAFETY_TIMEOUT_MS = 30_000;
 
-const BUDGETS: Record<ClassifierStage, number> = {
-    s1: 64,
-    s2: 4096,
-    single_fast: 256,
-    single_thinking: 4096,
+interface StageConfig {
+    budget: number;
+    stopSequences?: string[];
+    useThinking: boolean;
+}
+
+const STAGE_CONFIG: Record<ClassifierStage, StageConfig> = {
+    s1: { budget: 64, stopSequences: ["</block>"], useThinking: false },
+    s2: { budget: 4096, useThinking: true },
+    single_fast: { budget: 256, stopSequences: ["</block>"], useThinking: false },
+    single_thinking: { budget: 4096, useThinking: true },
 };
 
-const STOP_SEQUENCES: Record<ClassifierStage, string[] | undefined> = {
-    s1: ["</block>"],
-    s2: undefined,
-    single_fast: ["</block>"],
-    single_thinking: undefined,
-};
-
-const THINKING_STAGES: Set<ClassifierStage> = new Set(["s2", "single_thinking"]);
-
-/** Sentinel reason returned by S1 to indicate the action escalates to S2. */
+/**
+ * Sentinel reason emitted by runStage when stage="s1" and the model flags the
+ * action for escalation. Consumed exclusively by runTwoStage. Direct callers
+ * of runStage with stage="s1" must handle this sentinel themselves.
+ */
 export const S1_ESCALATE_SENTINEL = "__S1_ESCALATE__";
 
 function buildBillingHeaderBlock(): { type: string; text: string } | null {
@@ -65,9 +66,10 @@ export async function callApi(apiKey: string, stage: ClassifierStage, userMessag
     const userRules = configGetObject("safety.user_rules") as SafetyUserRules | undefined;
     const systemText = buildSystemPrompt(userRules);
 
+    const config = STAGE_CONFIG[stage];
     const requestBody: Record<string, unknown> = {
         model: safetyModel,
-        max_tokens: BUDGETS[stage],
+        max_tokens: config.budget,
         system: [
             { ...billingBlock, cache_control: cacheControl },
             { type: "text", text: systemText, cache_control: cacheControl },
@@ -79,13 +81,12 @@ export async function callApi(apiKey: string, stage: ClassifierStage, userMessag
             },
         ],
     };
-    if (THINKING_STAGES.has(stage) && supportsThinking) {
+    if (config.useThinking && supportsThinking) {
         requestBody.thinking = { type: "adaptive" };
         const isOpus = /opus-4-[56]/.test(safetyModel);
         requestBody.output_config = { effort: isOpus ? "max" : "high" };
     }
-    const stops = STOP_SEQUENCES[stage];
-    if (stops) requestBody.stop_sequences = stops;
+    if (config.stopSequences) requestBody.stop_sequences = config.stopSequences;
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), SAFETY_TIMEOUT_MS);
@@ -115,6 +116,10 @@ export async function callApi(apiKey: string, stage: ClassifierStage, userMessag
             body: JSON.stringify(requestBody),
             signal: controller.signal,
         });
+    } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        process.stderr.write(`LLM safety check fetch error: ${msg.slice(0, 200)}\n`);
+        return null;
     } finally {
         clearTimeout(timer);
     }

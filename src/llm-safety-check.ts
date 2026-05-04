@@ -261,6 +261,7 @@ export async function checkToolSafety(
             taskContext: options?.taskContext,
             claudeMd,
         });
+        // TODO(task-9): replace hard-coded "single_thinking" with configurable mode dispatch
         const firstResult = await runStage(apiKey, "single_thinking", firstMessage);
         if (!firstResult) return null;
 
@@ -280,6 +281,7 @@ export async function checkToolSafety(
             taskContext: options?.taskContext,
             claudeMd,
         });
+        // TODO(task-9): replace hard-coded "single_thinking" with configurable mode dispatch
         const secondResult = await runStage(apiKey, "single_thinking", secondMessage);
         if (secondResult?.decision === "approve") approvalCache.set(toolName, toolInput, secondResult);
         return secondResult;

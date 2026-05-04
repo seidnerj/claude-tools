@@ -1078,4 +1078,62 @@ describe("classifier mode selection", () => {
         expect(body.thinking).toBeUndefined();
         vi.doUnmock("../utils.js");
     });
+
+    it("invalid classifier_mode falls back to two-stage and warns", async () => {
+        vi.resetModules();
+        const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+        vi.doMock("../utils.js", async (importOriginal) => {
+            const actual = (await importOriginal()) as Record<string, unknown>;
+            return {
+                ...actual,
+                configGet: (k: string, d?: string) => {
+                    if (k === "safety.classifier_mode") return "three-stage";
+                    if (k === "safety.billing_cch") return "test";
+                    if (k === "safety.billing_cc_version") return "test.0";
+                    return d ?? null;
+                },
+                configGetObject: () => undefined,
+            };
+        });
+        fetchSpy = vi
+            .spyOn(globalThis, "fetch")
+            .mockResolvedValue(new Response(JSON.stringify({ content: [{ type: "text", text: "<block>no</block>" }] })));
+        mockGetApiKey.mockReturnValue("test-key");
+        const mod = await import("../llm-safety-check.js?invalid-mode=" + Date.now());
+        await mod.checkToolSafety("Bash", { command: "ls" });
+        const body = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
+        expect(body.max_tokens).toBe(64);
+        expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('unknown safety.classifier_mode "three-stage"'));
+        vi.doUnmock("../utils.js");
+    });
+
+    it("invalid single_stage_variant falls back to thinking and warns", async () => {
+        vi.resetModules();
+        const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+        vi.doMock("../utils.js", async (importOriginal) => {
+            const actual = (await importOriginal()) as Record<string, unknown>;
+            return {
+                ...actual,
+                configGet: (k: string, d?: string) => {
+                    if (k === "safety.classifier_mode") return "single-stage";
+                    if (k === "safety.single_stage_variant") return "blazing";
+                    if (k === "safety.billing_cch") return "test";
+                    if (k === "safety.billing_cc_version") return "test.0";
+                    return d ?? null;
+                },
+                configGetObject: () => undefined,
+            };
+        });
+        fetchSpy = vi
+            .spyOn(globalThis, "fetch")
+            .mockResolvedValue(new Response(JSON.stringify({ content: [{ type: "text", text: '{"decision":"approve","reason":"ok"}' }] })));
+        mockGetApiKey.mockReturnValue("test-key");
+        const mod = await import("../llm-safety-check.js?invalid-variant=" + Date.now());
+        await mod.checkToolSafety("Bash", { command: "ls" });
+        const body = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
+        expect(body.max_tokens).toBe(4096);
+        expect(body.thinking).toEqual({ type: "adaptive" });
+        expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('unknown safety.single_stage_variant "blazing"'));
+        vi.doUnmock("../utils.js");
+    });
 });

@@ -229,6 +229,18 @@ function buildUserMessage(
     return msg;
 }
 
+function validateMode(raw: string): ClassifierMode {
+    if (raw === "two-stage" || raw === "single-stage") return raw;
+    process.stderr.write(`LLM safety check: unknown safety.classifier_mode "${raw}", falling back to "two-stage"\n`);
+    return "two-stage";
+}
+
+function validateVariant(raw: string): SingleStageVariant {
+    if (raw === "fast" || raw === "thinking") return raw;
+    process.stderr.write(`LLM safety check: unknown safety.single_stage_variant "${raw}", falling back to "thinking"\n`);
+    return "thinking";
+}
+
 /**
  * Send a tool action to the Claude API for safety evaluation.
  *
@@ -253,8 +265,8 @@ export async function checkToolSafety(
     const cached = approvalCache.get(toolName, toolInput);
     if (cached) return cached;
 
-    const mode = (configGet("safety.classifier_mode", "two-stage") || "two-stage") as ClassifierMode;
-    const variant = (configGet("safety.single_stage_variant", "thinking") || "thinking") as SingleStageVariant;
+    const mode = validateMode(configGet("safety.classifier_mode", "two-stage") || "two-stage");
+    const variant = validateVariant(configGet("safety.single_stage_variant", "thinking") || "thinking");
 
     const claudeMd = readClaudeMd(options?.cwd) ?? undefined;
 

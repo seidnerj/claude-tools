@@ -283,7 +283,12 @@ export interface BlockState {
     totalDenials: number;
 }
 
-/** User-supplied additions to the safety classifier rules. Each list is merged with defaults. */
+/**
+ * User-supplied additions to the safety classifier rules. Each list is appended
+ * to the built-in BLOCK / ALLOW lists in the system prompt - no merge or
+ * sentinel logic. User rules are NOT sanitized; only trim() is applied. Treat
+ * this as trusted-source config (user-controlled, not network input).
+ */
 export interface SafetyUserRules {
     block_rules?: string[];
     allow_rules?: string[];

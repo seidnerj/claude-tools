@@ -2,6 +2,8 @@
 // System prompt + placeholder substitution + stage directives
 // ---------------------------------------------------------------------------
 
+import type { SafetyUserRules } from "./types.js";
+
 export const SYSTEM_PROMPT = `You are a security classifier for an autonomous AI coding agent. You evaluate the agent's pending action and decide whether it should be allowed, blocked, or escalated to the user for review.
 
 ## Context
@@ -125,8 +127,6 @@ When in doubt, prefer "prompt" over "deny". Only "deny" things that are unambigu
 For "prompt" and "deny" decisions, the reason MUST clearly explain what specific aspects of the action raised concern. This reason is shown to the user so they can make an informed decision.
 
 Do not output anything other than the JSON object.`;
-
-import type { SafetyUserRules } from "./types.js";
 
 const PLACEHOLDER_BLOCK = "<user_block_rules>";
 const PLACEHOLDER_ALLOW = "<user_allow_rules>";

@@ -41,6 +41,42 @@ export function configGet(configPath: string, defaultValue = ""): string {
     return obj != null ? String(obj) : defaultValue;
 }
 
+/**
+ * Read a config value without string coercion. Returns the raw value (may be an
+ * object, array, number, boolean, or string) or undefined if the path is missing.
+ *
+ * Use this for config keys that store structured data (objects/arrays).
+ * For simple string config use `configGet` which returns a string.
+ */
+export function configGetObject(configPath: string): unknown {
+    ensureConfig();
+    const d = JSON.parse(fs.readFileSync(getConfigFile(), "utf-8"));
+    const keys = configPath.split(".");
+    let obj: unknown = d;
+    for (const k of keys) {
+        if (obj == null || typeof obj !== "object") return undefined;
+        obj = (obj as Record<string, unknown>)[k];
+    }
+    return obj ?? undefined;
+}
+
+/**
+ * Write a structured (non-string) config value. Use this for config keys that store
+ * objects, arrays, numbers, or booleans. For plain strings, `configSet` also works.
+ */
+export function configSetObject(configPath: string, value: unknown): void {
+    ensureConfig();
+    const d = JSON.parse(fs.readFileSync(getConfigFile(), "utf-8"));
+    const keys = configPath.split(".");
+    let obj = d;
+    for (const k of keys.slice(0, -1)) {
+        if (obj[k] == null || typeof obj[k] !== "object") obj[k] = {};
+        obj = obj[k];
+    }
+    obj[keys[keys.length - 1]] = value;
+    fs.writeFileSync(getConfigFile(), JSON.stringify(d, null, 2));
+}
+
 export function configSet(configPath: string, value: string): void {
     ensureConfig();
     const d = JSON.parse(fs.readFileSync(getConfigFile(), "utf-8"));

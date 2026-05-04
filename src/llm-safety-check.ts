@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { readFile, stat } from "node:fs/promises";
 import * as os from "node:os";
-import { getApiKey, configGet } from "./utils.js";
+import { getApiKey, configGet, configGetObject } from "./utils.js";
 import type { SafetyCheckResult, HookInput, HookOutput, BlockState, SafetyUserRules } from "./types.js";
 import { buildSystemPrompt } from "./safety-prompts.js";
 
@@ -393,7 +393,7 @@ async function callSafetyModel(apiKey: string, userMessage: string, model?: stri
     const billingBlock = buildBillingHeaderBlock();
     if (!billingBlock) return null;
 
-    const userRules = configGet("safety.user_rules") as SafetyUserRules | undefined;
+    const userRules = configGetObject("safety.user_rules") as SafetyUserRules | undefined;
     const systemText = buildSystemPrompt(userRules);
 
     const safetyModel = model || configGet("safety.model", DEFAULT_SAFETY_MODEL) || DEFAULT_SAFETY_MODEL;

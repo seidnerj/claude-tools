@@ -40,7 +40,7 @@ import {
     resetConsecutiveBlocks,
     shouldDegradeToPrompt,
 } from "../llm-safety-check.js";
-import { getApiKey } from "../utils.js";
+import { getApiKey, configGetObject, configSetObject } from "../utils.js";
 
 const mockStat = vi.mocked(stat);
 const mockReadFile = vi.mocked(readFile);
@@ -816,5 +816,45 @@ describe("prompt caching", () => {
         expect(body.messages[0].content).toBeInstanceOf(Array);
         const lastBlock = body.messages[0].content[body.messages[0].content.length - 1];
         expect(lastBlock.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// user rules end-to-end (regression for configGet string coercion bug)
+// ---------------------------------------------------------------------------
+
+describe("user rules end-to-end", () => {
+    let previousUserRules: unknown;
+
+    beforeEach(() => {
+        // Save any pre-existing safety.user_rules so we can restore it after the test
+        previousUserRules = configGetObject("safety.user_rules");
+        // Write a test user_rules object - this exercises configSetObject
+        configSetObject("safety.user_rules", { block_rules: ["TEST_RULE_BLOCK_MARKER"] });
+        mockGetApiKey.mockReturnValue("test-key");
+        mockFetch.mockResolvedValue(mockApiResponse("approve", "Safe"));
+    });
+
+    afterEach(() => {
+        // Restore original value (or delete the key by setting undefined/null)
+        if (previousUserRules === undefined) {
+            // Remove the key we added - write null to clear it
+            configSetObject("safety.user_rules", undefined);
+        } else {
+            configSetObject("safety.user_rules", previousUserRules);
+        }
+    });
+
+    it("includes user block_rules bullet in the system prompt sent to the API", async () => {
+        await checkToolSafety("Bash", { command: "ls" });
+
+        expect(mockFetch).toHaveBeenCalledOnce();
+        const body = JSON.parse((mockFetch.mock.calls[0][1] as RequestInit).body as string);
+
+        // system[0] is the billing header block, system[1] is the safety prompt text
+        expect(body.system).toBeInstanceOf(Array);
+        expect(body.system.length).toBeGreaterThanOrEqual(2);
+        const systemPromptText: string = body.system[1].text;
+        expect(systemPromptText).toContain("- TEST_RULE_BLOCK_MARKER");
     });
 });

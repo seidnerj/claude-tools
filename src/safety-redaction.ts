@@ -11,7 +11,7 @@
 
 import * as path from "node:path";
 
-export type ToolRedactor = (input: Record<string, unknown>) => string | null | undefined;
+export type ToolRedactor = (input: Record<string, unknown>) => string | null;
 
 const SAFE_BASH_PREFIXES: RegExp[] = [
     /^(ls|ll|la)\b/,
@@ -47,16 +47,17 @@ export const TOOL_REDACTORS: Record<string, ToolRedactor> = {
     BashOutput: () => null,
 };
 
+function callRedactor(toolName: string, toolInput: Record<string, unknown>): string | null | undefined {
+    return TOOL_REDACTORS[toolName]?.(toolInput);
+}
+
 /**
  * Check if a tool use can be fast-approved without calling the LLM.
  * Returns a reason string if fast-approved, or null if the LLM should evaluate.
  */
 export function isFastApprove(toolName: string, toolInput: Record<string, unknown>, cwd?: string): string | null {
-    const redactor = TOOL_REDACTORS[toolName];
-    if (redactor) {
-        const result = redactor(toolInput);
-        if (result === null) return `Tool ${toolName} is read-only or stateless`;
-    }
+    const redacted = callRedactor(toolName, toolInput);
+    if (redacted === null) return `Tool ${toolName} is read-only or stateless`;
 
     if ((toolName === "Edit" || toolName === "Write") && cwd) {
         const filePath = toolInput.file_path as string | undefined;
@@ -87,11 +88,8 @@ export function isFastApprove(toolName: string, toolInput: Record<string, unknow
  * WebFetch, WebSearch, Agent) runs. Anything else falls back to JSON.
  */
 export function formatToolInput(toolName: string, toolInput: Record<string, unknown>): string {
-    const redactor = TOOL_REDACTORS[toolName];
-    if (redactor) {
-        const result = redactor(toolInput);
-        if (typeof result === "string") return result;
-    }
+    const redacted = callRedactor(toolName, toolInput);
+    if (typeof redacted === "string") return redacted;
 
     if (toolName === "Bash") {
         const command = (toolInput.command as string) ?? "";

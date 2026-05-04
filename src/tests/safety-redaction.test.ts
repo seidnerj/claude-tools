@@ -65,4 +65,9 @@ describe("formatToolInput", () => {
         expect(out).toContain('"foo"');
         expect(out).toContain('"bar"');
     });
+
+    it("falls through to default formatter when redactor returns null", () => {
+        const out = formatToolInput("Read", { file_path: "/etc/passwd", offset: 0 });
+        expect(out).toContain("/etc/passwd");
+    });
 });

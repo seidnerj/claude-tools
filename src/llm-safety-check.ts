@@ -395,13 +395,22 @@ async function callSafetyModel(apiKey: string, userMessage: string, model?: stri
 
     const safetyModel = model || configGet("safety.model", DEFAULT_SAFETY_MODEL) || DEFAULT_SAFETY_MODEL;
     const supportsThinking = /sonnet-4-[56]|opus-4-[56]/.test(safetyModel);
+    const cacheControl = { type: "ephemeral" as const, ttl: "1h" as const };
     const requestBody: Record<string, unknown> = {
         model: safetyModel,
         max_tokens: SAFETY_MAX_TOKENS,
         // system is an array with the billing header block first - required for 4.x model
         // access on workspace-restricted API keys (see buildBillingHeaderBlock above)
-        system: [billingBlock, { type: "text", text: SYSTEM_PROMPT }],
-        messages: [{ role: "user", content: userMessage }],
+        system: [
+            { ...billingBlock, cache_control: cacheControl },
+            { type: "text", text: SYSTEM_PROMPT, cache_control: cacheControl },
+        ],
+        messages: [
+            {
+                role: "user",
+                content: [{ type: "text", text: userMessage, cache_control: cacheControl }],
+            },
+        ],
     };
     if (supportsThinking) {
         requestBody.thinking = { type: "adaptive" };

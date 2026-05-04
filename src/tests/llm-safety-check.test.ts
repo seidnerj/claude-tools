@@ -163,13 +163,14 @@ describe("checkCommandSafety", () => {
         const body = JSON.parse(opts.body);
         expect(body.model).toBe("claude-opus-4-6");
         expect(body.thinking).toEqual({ type: "adaptive" });
-        const content = body.messages[0].content;
-        expect(content).toContain("<untrusted-command>");
-        expect(content).toContain("ls -la");
-        expect(content).toContain("</untrusted-command>");
-        expect(content).toContain("<untrusted-description>");
-        expect(content).toContain("List files");
-        expect(content).toContain("</untrusted-description>");
+        const contentBlocks = body.messages[0].content;
+        const contentText = contentBlocks[contentBlocks.length - 1].text;
+        expect(contentText).toContain("<untrusted-command>");
+        expect(contentText).toContain("ls -la");
+        expect(contentText).toContain("</untrusted-command>");
+        expect(contentText).toContain("<untrusted-description>");
+        expect(contentText).toContain("List files");
+        expect(contentText).toContain("</untrusted-description>");
     });
 
     it("returns deny decision from API", async () => {
@@ -229,10 +230,11 @@ describe("checkCommandSafety", () => {
 
         // Verify second call includes file contents
         const secondBody = JSON.parse(mockFetch.mock.calls[1][1].body);
-        const content = secondBody.messages[0].content;
-        expect(content).toContain("Referenced file contents (UNTRUSTED");
-        expect(content).toContain('<untrusted-file path="/tmp/test.py">');
-        expect(content).toContain("print('safe')");
+        const secondContentBlocks = secondBody.messages[0].content;
+        const secondContentText = secondContentBlocks[secondContentBlocks.length - 1].text;
+        expect(secondContentText).toContain("Referenced file contents (UNTRUSTED");
+        expect(secondContentText).toContain('<untrusted-file path="/tmp/test.py">');
+        expect(secondContentText).toContain("print('safe')");
     });
 
     it("handles needs_context with no files listed", async () => {
@@ -265,7 +267,9 @@ describe("checkCommandSafety", () => {
 
         // Second call should not include file contents section
         const secondBody = JSON.parse(mockFetch.mock.calls[1][1].body);
-        expect(secondBody.messages[0].content).not.toContain("Referenced file contents");
+        const noCtxBlocks = secondBody.messages[0].content;
+        const noCtxText = noCtxBlocks[noCtxBlocks.length - 1].text;
+        expect(noCtxText).not.toContain("Referenced file contents");
     });
 
     it("returns null when second pass API call fails", async () => {
@@ -520,13 +524,14 @@ describe("checkToolSafety multi-tool formatting", () => {
         });
 
         const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-        const content = body.messages[0].content;
-        expect(content).toContain("Tool: Edit");
-        expect(content).toContain("File: /project/src/foo.ts");
-        expect(content).toContain("<old_string>");
-        expect(content).toContain("old code");
-        expect(content).toContain("<new_string>");
-        expect(content).toContain("new code");
+        const contentBlocks = body.messages[0].content;
+        const contentText = contentBlocks[contentBlocks.length - 1].text;
+        expect(contentText).toContain("Tool: Edit");
+        expect(contentText).toContain("File: /project/src/foo.ts");
+        expect(contentText).toContain("<old_string>");
+        expect(contentText).toContain("old code");
+        expect(contentText).toContain("<new_string>");
+        expect(contentText).toContain("new code");
     });
 
     it("formats Write tool input with file path and content", async () => {
@@ -536,11 +541,12 @@ describe("checkToolSafety multi-tool formatting", () => {
         });
 
         const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-        const content = body.messages[0].content;
-        expect(content).toContain("Tool: Write");
-        expect(content).toContain("File: /project/new-file.ts");
-        expect(content).toContain("<content>");
-        expect(content).toContain("file content here");
+        const contentBlocks = body.messages[0].content;
+        const contentText = contentBlocks[contentBlocks.length - 1].text;
+        expect(contentText).toContain("Tool: Write");
+        expect(contentText).toContain("File: /project/new-file.ts");
+        expect(contentText).toContain("<content>");
+        expect(contentText).toContain("file content here");
     });
 
     it("formats WebFetch tool input with URL", async () => {
@@ -550,9 +556,10 @@ describe("checkToolSafety multi-tool formatting", () => {
         });
 
         const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-        const content = body.messages[0].content;
-        expect(content).toContain("Tool: WebFetch");
-        expect(content).toContain("URL: https://example.com/api");
+        const contentBlocks = body.messages[0].content;
+        const contentText = contentBlocks[contentBlocks.length - 1].text;
+        expect(contentText).toContain("Tool: WebFetch");
+        expect(contentText).toContain("URL: https://example.com/api");
     });
 
     it("formats Agent tool input with prompt and subagent type", async () => {
@@ -562,10 +569,11 @@ describe("checkToolSafety multi-tool formatting", () => {
         });
 
         const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-        const content = body.messages[0].content;
-        expect(content).toContain("Tool: Agent");
-        expect(content).toContain("Subagent type: Explore");
-        expect(content).toContain("search for files");
+        const contentBlocks = body.messages[0].content;
+        const contentText = contentBlocks[contentBlocks.length - 1].text;
+        expect(contentText).toContain("Tool: Agent");
+        expect(contentText).toContain("Subagent type: Explore");
+        expect(contentText).toContain("search for files");
     });
 
     it("formats MCP tool input as JSON", async () => {
@@ -575,10 +583,11 @@ describe("checkToolSafety multi-tool formatting", () => {
         });
 
         const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-        const content = body.messages[0].content;
-        expect(content).toContain("Tool: mcp__server__tool");
-        expect(content).toContain('"param1"');
-        expect(content).toContain('"value1"');
+        const contentBlocks = body.messages[0].content;
+        const contentText = contentBlocks[contentBlocks.length - 1].text;
+        expect(contentText).toContain("Tool: mcp__server__tool");
+        expect(contentText).toContain('"param1"');
+        expect(contentText).toContain('"value1"');
     });
 
     it("truncates large Write content", async () => {
@@ -589,9 +598,10 @@ describe("checkToolSafety multi-tool formatting", () => {
         });
 
         const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-        const content = body.messages[0].content;
-        expect(content).toContain("... (truncated)");
-        expect(content.length).toBeLessThan(largeContent.length);
+        const contentBlocks = body.messages[0].content;
+        const contentText = contentBlocks[contentBlocks.length - 1].text;
+        expect(contentText).toContain("... (truncated)");
+        expect(contentText.length).toBeLessThan(largeContent.length);
     });
 });
 
@@ -775,5 +785,36 @@ describe("block count tracking", () => {
         } catch {
             // ignore
         }
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Prompt caching
+// ---------------------------------------------------------------------------
+
+describe("prompt caching", () => {
+    beforeEach(() => {
+        mockGetApiKey.mockReturnValue("test-key");
+        mockFetch.mockResolvedValue(mockApiResponse("approve", "ok"));
+    });
+
+    it("attaches cache_control to all system blocks", async () => {
+        await checkToolSafety("Bash", { command: "ls -la" });
+        expect(mockFetch).toHaveBeenCalled();
+        const body = JSON.parse((mockFetch.mock.calls[0][1] as RequestInit).body as string);
+        expect(body.system).toBeInstanceOf(Array);
+        expect(body.system.length).toBeGreaterThanOrEqual(2);
+        for (const block of body.system) {
+            expect(block.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+        }
+    });
+
+    it("attaches cache_control to action message block", async () => {
+        await checkToolSafety("Bash", { command: "ls -la" });
+        const body = JSON.parse((mockFetch.mock.calls[0][1] as RequestInit).body as string);
+        expect(body.messages).toHaveLength(1);
+        expect(body.messages[0].content).toBeInstanceOf(Array);
+        const lastBlock = body.messages[0].content[body.messages[0].content.length - 1];
+        expect(lastBlock.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
     });
 });

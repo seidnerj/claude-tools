@@ -11,11 +11,17 @@ import type { SafetyCheckResult } from "./types.js";
 
 const DEFAULT_MAX_ENTRIES = 256;
 
+function sortKeysDeep(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(sortKeysDeep);
+    if (value === null || typeof value !== "object") return value;
+    const obj = value as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(obj).sort()) out[k] = sortKeysDeep(obj[k]);
+    return out;
+}
+
 function hashKey(toolName: string, toolInput: Record<string, unknown>): string {
-    const sortedKeys = Object.keys(toolInput).sort();
-    const normalized: Record<string, unknown> = {};
-    for (const k of sortedKeys) normalized[k] = toolInput[k];
-    const payload = JSON.stringify({ tool: toolName, input: normalized });
+    const payload = JSON.stringify({ tool: toolName, input: sortKeysDeep(toolInput) });
     return createHash("sha256").update(payload).digest("hex");
 }
 

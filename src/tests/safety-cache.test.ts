@@ -77,4 +77,18 @@ describe("ApprovalCache", () => {
         c.clear();
         expect(c.get("Bash", { command: "ls" })).toBeNull();
     });
+
+    it("normalizes nested object key order so {a:{x,y}} and {a:{y,x}} hit the same entry", () => {
+        const c = new ApprovalCache();
+        c.set("Agent", { prompt: "do X", context: { cwd: "/a", env: "prod" } }, { decision: "approve", reason: "ok" });
+        const hit = c.get("Agent", { prompt: "do X", context: { env: "prod", cwd: "/a" } });
+        expect(hit?.decision).toBe("approve");
+    });
+
+    it("normalizes nested array elements positionally (order matters for arrays)", () => {
+        const c = new ApprovalCache();
+        c.set("Agent", { prompt: "x", tags: ["a", "b"] }, { decision: "approve", reason: "ok" });
+        expect(c.get("Agent", { prompt: "x", tags: ["a", "b"] })?.decision).toBe("approve");
+        expect(c.get("Agent", { prompt: "x", tags: ["b", "a"] })).toBeNull();
+    });
 });

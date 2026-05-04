@@ -504,12 +504,14 @@ export type ClassifierStage = "s1" | "s2" | "single_fast" | "single_thinking";
 export interface OpenSessionResult {
     /** Present only when the caller provided a sessionName for a new session. */
     sessionName?: string;
-    /** Present only when the session was resumed. Echoes the value passed as `resume` (UUID or session name) verbatim. */
+    /** Present only when the session was resumed. Echoes the value passed as `resume` verbatim. */
     resumedSessionId?: string;
     /** The https://claude.ai/code/session_xxx URL shown in the remote control UI. */
     sessionUrl: string;
     /** The absolute workspace path used to start the session. */
     workspace: string;
-    /** The tmux session hosting the Claude process. Attach with `tmux attach -t <name>`. */
-    tmuxSession: string;
+    /** ID of the OS-handler that launched the session ("macos-default", "linux-xdg", "linux-alt"). */
+    handlerId: string;
+    /** Resolved session ID parsed from the .jsonl filename observed by the watcher. */
+    sessionId: string;
 }

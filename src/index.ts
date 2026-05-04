@@ -98,6 +98,6 @@ export {
 export { exportSession, importSession } from "./share-session.js";
 export type { ExportOptions, ExportResult, ImportOptions, ImportResult } from "./share-session.js";
 export { parseChangelog, getVersion, diffVersions, searchChangelog, fetchChangelog, compareSemver } from "./changelog.js";
-export { openSession } from "./open-session.js";
+export { openSession, WorkspaceNotTrustedError, NoGUITerminalError, TerminalLaunchError, SessionWatchTimeoutError } from "./open-session.js";
 export type { OpenSessionOptions } from "./open-session.js";
 export type * from "./types.js";

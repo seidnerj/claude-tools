@@ -69,6 +69,7 @@
         "release:minor": "npm version minor -m \"chore: release v%s\" && git push --follow-tags",
         "release:patch": "npm version patch -m \"chore: release v%s\" && git push --follow-tags",
         "test": "vitest run",
+        "test:drift": "tsx scripts/test-trust-drift.ts",
         "test:watch": "vitest"
     },
     "type": "module",

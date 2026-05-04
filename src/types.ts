@@ -271,10 +271,17 @@ export interface HookOutput {
     additionalContext?: string;
 }
 
+export type ClassifierMode = "two-stage" | "single-stage";
+export type SingleStageVariant = "fast" | "thinking";
+
 /** Safety hook configuration stored in ~/.claude/key-config.json under "safety" */
 export interface SafetyConfig {
     model: string;
     context_level: "full" | "user-only" | "none";
+    classifier_mode?: ClassifierMode;
+    single_stage_variant?: SingleStageVariant;
+    fail_closed?: boolean;
+    user_rules?: SafetyUserRules;
 }
 
 /** Block count state for graceful degradation, persisted per session */

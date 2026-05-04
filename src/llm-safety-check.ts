@@ -7,9 +7,9 @@ import * as path from "node:path";
 import { readFile, stat } from "node:fs/promises";
 import * as os from "node:os";
 import { getApiKey, configGet } from "./utils.js";
-import type { SafetyCheckResult, HookInput, HookOutput, BlockState } from "./types.js";
+import type { SafetyCheckResult, HookInput, HookOutput, BlockState, ClassifierMode, SingleStageVariant } from "./types.js";
 import { isFastApprove, formatToolInput } from "./safety-redaction.js";
-import { runStage } from "./safety-stages.js";
+import { runStage, runTwoStage, runSingleStage } from "./safety-stages.js";
 import { approvalCache } from "./safety-cache.js";
 
 export { isFastApprove, formatToolInput } from "./safety-redaction.js";
@@ -253,6 +253,9 @@ export async function checkToolSafety(
     const cached = approvalCache.get(toolName, toolInput);
     if (cached) return cached;
 
+    const mode = (configGet("safety.classifier_mode", "two-stage") || "two-stage") as ClassifierMode;
+    const variant = (configGet("safety.single_stage_variant", "thinking") || "thinking") as SingleStageVariant;
+
     const claudeMd = readClaudeMd(options?.cwd) ?? undefined;
 
     try {
@@ -261,8 +264,10 @@ export async function checkToolSafety(
             taskContext: options?.taskContext,
             claudeMd,
         });
-        // TODO(task-9): replace hard-coded "single_thinking" with configurable mode dispatch
-        const firstResult = await runStage(apiKey, "single_thinking", firstMessage);
+        const firstResult =
+            mode === "two-stage"
+                ? await runTwoStage(apiKey, firstMessage)
+                : await runSingleStage(apiKey, variant === "fast" ? "single_fast" : "single_thinking", firstMessage);
         if (!firstResult) return null;
 
         // If the model can decide without file contents, return immediately
@@ -272,6 +277,7 @@ export async function checkToolSafety(
         }
 
         // Pass 2: resolve requested files and re-evaluate (Bash only)
+        // Skip S1 - go straight to the deeper stage (S2 in two-stage mode, single_thinking otherwise)
         const requestedPaths = firstResult.files ?? [];
         if (requestedPaths.length === 0) return firstResult;
 
@@ -281,8 +287,8 @@ export async function checkToolSafety(
             taskContext: options?.taskContext,
             claudeMd,
         });
-        // TODO(task-9): replace hard-coded "single_thinking" with configurable mode dispatch
-        const secondResult = await runStage(apiKey, "single_thinking", secondMessage);
+        const secondStage: "s2" | "single_thinking" = mode === "two-stage" ? "s2" : "single_thinking";
+        const secondResult = await runStage(apiKey, secondStage, secondMessage);
         if (secondResult?.decision === "approve") approvalCache.set(toolName, toolInput, secondResult);
         return secondResult;
     } catch (e) {

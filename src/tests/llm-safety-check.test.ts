@@ -86,6 +86,21 @@ function mockApiResponse(decision: string, reason: string, files?: string[]) {
     };
 }
 
+/**
+ * Create a mock response for the S1 stage (XML format).
+ * "no" -> S1 approves (no escalation); "yes" -> S1 escalates to S2.
+ */
+function mockS1Response(block: "yes" | "no") {
+    return {
+        ok: true,
+        status: 200,
+        text: async () => "",
+        json: async () => ({
+            content: [{ type: "text", text: `<block>${block}</block>` }],
+        }),
+    };
+}
+
 // ---------------------------------------------------------------------------
 // resolveRequestedFiles
 // ---------------------------------------------------------------------------
@@ -150,22 +165,26 @@ describe("checkCommandSafety", () => {
         expect(result).toBeNull();
     });
 
-    it("returns approve decision from API", async () => {
+    it("returns approve decision from API (S1 clears in two-stage default)", async () => {
         mockGetApiKey.mockReturnValue("test-key");
-        mockFetch.mockResolvedValueOnce(mockApiResponse("approve", "Safe read-only command"));
+        // Default mode is two-stage: S1 responds with XML approve
+        mockFetch.mockResolvedValueOnce(mockS1Response("no"));
 
         const result = await checkCommandSafety("Bash", { command: "ls -la", description: "List files" });
-        expect(result).toEqual({ decision: "approve", reason: "Safe read-only command" });
+        expect(result?.decision).toBe("approve");
 
-        // Verify the API was called with correct params
+        // S1 should be the only call
         expect(mockFetch).toHaveBeenCalledOnce();
         const [url, opts] = mockFetch.mock.calls[0];
         expect(url).toBe("https://api.anthropic.com/v1/messages?beta=true");
         expect(opts.headers["x-api-key"]).toBe("test-key");
 
+        // S1 body: 64-token budget, stop_sequences, no thinking
         const body = JSON.parse(opts.body);
         expect(body.model).toBe("claude-opus-4-6");
-        expect(body.thinking).toEqual({ type: "adaptive" });
+        expect(body.max_tokens).toBe(64);
+        expect(body.stop_sequences).toEqual(["</block>"]);
+        expect(body.thinking).toBeUndefined();
         const contentBlocks = body.messages[0].content;
         const contentText = contentBlocks[contentBlocks.length - 1].text;
         expect(contentText).toContain("<untrusted-command>");
@@ -176,12 +195,16 @@ describe("checkCommandSafety", () => {
         expect(contentText).toContain("</untrusted-description>");
     });
 
-    it("returns deny decision from API", async () => {
+    it("returns deny decision from API (S1 escalates, S2 denies)", async () => {
         mockGetApiKey.mockReturnValue("test-key");
+        // S1 escalates (yes = needs S2 review)
+        mockFetch.mockResolvedValueOnce(mockS1Response("yes"));
+        // S2 denies
         mockFetch.mockResolvedValueOnce(mockApiResponse("deny", "Dangerous command"));
 
         const result = await checkCommandSafety("Bash", { command: "rm -rf /" });
         expect(result).toEqual({ decision: "deny", reason: "Dangerous command" });
+        expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
     it("returns null on API error", async () => {
@@ -200,8 +223,11 @@ describe("checkCommandSafety", () => {
         expect(result).toBeNull();
     });
 
-    it("handles markdown-wrapped JSON response", async () => {
+    it("handles markdown-wrapped JSON response (S1 escalates, S2 returns markdown JSON)", async () => {
         mockGetApiKey.mockReturnValue("test-key");
+        // S1 escalates to S2
+        mockFetch.mockResolvedValueOnce(mockS1Response("yes"));
+        // S2 returns markdown-wrapped JSON
         mockFetch.mockResolvedValueOnce({
             ok: true,
             json: async () => ({
@@ -211,83 +237,98 @@ describe("checkCommandSafety", () => {
 
         const result = await checkCommandSafety("Bash", { command: "curl example.com" });
         expect(result).toEqual({ decision: "prompt", reason: "Ambiguous" });
+        expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
-    it("performs two-pass when first call returns needs_context", async () => {
+    it("performs two-pass when first call returns needs_context (S1 escalates, S2 needs_context, S2 second pass)", async () => {
         mockGetApiKey.mockReturnValue("test-key");
 
-        // Pass 1: model asks for file contents
+        // S1: escalate to S2
+        mockFetch.mockResolvedValueOnce(mockS1Response("yes"));
+
+        // S2 first pass: model asks for file contents
         mockFetch.mockResolvedValueOnce(mockApiResponse("needs_context", "Need to inspect the script", ["/tmp/test.py"]));
 
         // File resolution
         mockStat.mockResolvedValueOnce({ isFile: () => true, size: 50 } as Awaited<ReturnType<typeof stat>>);
         mockReadFile.mockResolvedValueOnce("print('safe')" as never);
 
-        // Pass 2: model makes final decision with file contents
+        // S2 second pass: model makes final decision with file contents
         mockFetch.mockResolvedValueOnce(mockApiResponse("approve", "Script is safe"));
 
         const result = await checkCommandSafety("Bash", { command: "python3 /tmp/test.py" });
 
         expect(result).toEqual({ decision: "approve", reason: "Script is safe" });
-        expect(mockFetch).toHaveBeenCalledTimes(2);
+        expect(mockFetch).toHaveBeenCalledTimes(3);
 
-        // Verify second call includes file contents
-        const secondBody = JSON.parse(mockFetch.mock.calls[1][1].body);
-        const secondContentBlocks = secondBody.messages[0].content;
-        const secondContentText = secondContentBlocks[secondContentBlocks.length - 1].text;
-        expect(secondContentText).toContain("Referenced file contents (UNTRUSTED");
-        expect(secondContentText).toContain('<untrusted-file path="/tmp/test.py">');
-        expect(secondContentText).toContain("print('safe')");
+        // Verify third call includes file contents
+        const thirdBody = JSON.parse(mockFetch.mock.calls[2][1].body);
+        const thirdContentBlocks = thirdBody.messages[0].content;
+        const thirdContentText = thirdContentBlocks[thirdContentBlocks.length - 1].text;
+        expect(thirdContentText).toContain("Referenced file contents (UNTRUSTED");
+        expect(thirdContentText).toContain('<untrusted-file path="/tmp/test.py">');
+        expect(thirdContentText).toContain("print('safe')");
     });
 
-    it("handles needs_context with no files listed", async () => {
+    it("handles needs_context with no files listed (S1 escalates, S2 needs_context with no files)", async () => {
         mockGetApiKey.mockReturnValue("test-key");
+        // S1 escalates to S2
+        mockFetch.mockResolvedValueOnce(mockS1Response("yes"));
+        // S2 returns needs_context with no file list
         mockFetch.mockResolvedValueOnce(mockApiResponse("needs_context", "Ambiguous but no files to check"));
 
         const result = await checkCommandSafety("Bash", { command: "some-command" });
 
-        // Should return the needs_context result as-is without a second call
+        // Should return the needs_context result as-is without a third call
         expect(result).toEqual({ decision: "needs_context", reason: "Ambiguous but no files to check" });
-        expect(mockFetch).toHaveBeenCalledTimes(1);
+        expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
-    it("handles needs_context when requested files don't exist", async () => {
+    it("handles needs_context when requested files don't exist (S1 escalates, S2 needs_context, S2 second pass)", async () => {
         mockGetApiKey.mockReturnValue("test-key");
 
-        // Pass 1: model asks for file
+        // S1: escalate to S2
+        mockFetch.mockResolvedValueOnce(mockS1Response("yes"));
+
+        // S2 first pass: model asks for file
         mockFetch.mockResolvedValueOnce(mockApiResponse("needs_context", "Need the script", ["/tmp/missing.py"]));
 
         // File doesn't exist
         mockStat.mockRejectedValueOnce(new Error("ENOENT"));
 
-        // Pass 2: model decides without file contents
+        // S2 second pass: model decides without file contents
         mockFetch.mockResolvedValueOnce(mockApiResponse("prompt", "Script not found on disk"));
 
         const result = await checkCommandSafety("Bash", { command: "python3 /tmp/missing.py" });
 
         expect(result).toEqual({ decision: "prompt", reason: "Script not found on disk" });
-        expect(mockFetch).toHaveBeenCalledTimes(2);
+        expect(mockFetch).toHaveBeenCalledTimes(3);
 
-        // Second call should not include file contents section
-        const secondBody = JSON.parse(mockFetch.mock.calls[1][1].body);
-        const noCtxBlocks = secondBody.messages[0].content;
+        // Third call should not include file contents section
+        const thirdBody = JSON.parse(mockFetch.mock.calls[2][1].body);
+        const noCtxBlocks = thirdBody.messages[0].content;
         const noCtxText = noCtxBlocks[noCtxBlocks.length - 1].text;
         expect(noCtxText).not.toContain("Referenced file contents");
     });
 
-    it("returns null when second pass API call fails", async () => {
+    it("returns null when second pass API call fails (S1 escalates, S2 needs_context, S2 second pass fails)", async () => {
         mockGetApiKey.mockReturnValue("test-key");
 
+        // S1: escalate to S2
+        mockFetch.mockResolvedValueOnce(mockS1Response("yes"));
+
+        // S2 first pass: needs file
         mockFetch.mockResolvedValueOnce(mockApiResponse("needs_context", "Need the script", ["/tmp/test.py"]));
 
         mockStat.mockResolvedValueOnce({ isFile: () => true, size: 50 } as Awaited<ReturnType<typeof stat>>);
         mockReadFile.mockResolvedValueOnce("content" as never);
 
-        // Second API call fails
+        // S2 second pass fails
         mockFetch.mockResolvedValueOnce({ ok: false, status: 500, text: async () => "Server Error" });
 
         const result = await checkCommandSafety("Bash", { command: "python3 /tmp/test.py" });
         expect(result).toBeNull();
+        expect(mockFetch).toHaveBeenCalledTimes(3);
     });
 });
 
@@ -300,17 +341,21 @@ describe("processHookInput", () => {
         mockGetApiKey.mockReturnValue("test-key");
     });
 
-    it("returns allow output for approve decision", async () => {
-        mockFetch.mockResolvedValueOnce(mockApiResponse("approve", "Safe command"));
+    it("returns allow output for approve decision (S1 clears)", async () => {
+        // S1 approves directly with XML response
+        mockFetch.mockResolvedValueOnce(mockS1Response("no"));
 
         const result = await processHookInput({
             tool_name: "Bash",
             tool_input: { command: "python3 script.py" },
         });
-        expect(result).toEqual({ decision: "allow", reason: "Safe command" });
+        expect(result?.decision).toBe("allow");
     });
 
-    it("returns deny output for deny decision", async () => {
+    it("returns deny output for deny decision (S1 escalates, S2 denies)", async () => {
+        // S1 escalates
+        mockFetch.mockResolvedValueOnce(mockS1Response("yes"));
+        // S2 denies
         mockFetch.mockResolvedValueOnce(mockApiResponse("deny", "Dangerous"));
 
         const result = await processHookInput({
@@ -320,7 +365,10 @@ describe("processHookInput", () => {
         expect(result).toEqual({ decision: "deny", reason: "Dangerous" });
     });
 
-    it("returns null for prompt decision (fall through)", async () => {
+    it("returns null for prompt decision (fall through, S1 escalates, S2 prompts)", async () => {
+        // S1 escalates
+        mockFetch.mockResolvedValueOnce(mockS1Response("yes"));
+        // S2 returns prompt
         mockFetch.mockResolvedValueOnce(mockApiResponse("prompt", "Ambiguous"));
 
         const result = await processHookInput({
@@ -330,8 +378,11 @@ describe("processHookInput", () => {
         expect(result).toBeNull();
     });
 
-    it("logs reason to stderr for prompt decision", async () => {
+    it("logs reason to stderr for prompt decision (S1 escalates, S2 prompts)", async () => {
         const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+        // S1 escalates
+        mockFetch.mockResolvedValueOnce(mockS1Response("yes"));
+        // S2 returns prompt with reason
         mockFetch.mockResolvedValueOnce(mockApiResponse("prompt", "Contains hardcoded credentials"));
 
         await processHookInput({
@@ -343,8 +394,11 @@ describe("processHookInput", () => {
         stderrSpy.mockRestore();
     });
 
-    it("does not log to stderr for prompt decision with empty reason", async () => {
+    it("does not log to stderr for prompt decision with empty reason (S1 escalates, S2 prompt empty)", async () => {
         const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+        // S1 escalates
+        mockFetch.mockResolvedValueOnce(mockS1Response("yes"));
+        // S2 returns prompt with empty reason
         mockFetch.mockResolvedValueOnce(mockApiResponse("prompt", ""));
 
         await processHookInput({
@@ -516,7 +570,8 @@ describe("isFastApprove", () => {
 describe("checkToolSafety multi-tool formatting", () => {
     beforeEach(() => {
         mockGetApiKey.mockReturnValue("test-key");
-        mockFetch.mockResolvedValue(mockApiResponse("approve", "Safe"));
+        // S1 approves via XML so the chain completes with one call
+        mockFetch.mockResolvedValue(mockS1Response("no"));
     });
 
     it("formats Edit tool input with file path and old/new strings", async () => {
@@ -758,7 +813,20 @@ describe("block count tracking", () => {
 
     it("processHookInput degrades deny to prompt after threshold", async () => {
         mockGetApiKey.mockReturnValue("test-key");
-        mockFetch.mockResolvedValue(mockApiResponse("deny", "Dangerous"));
+        // Each invocation needs two fetch calls: S1 escalates (XML yes), S2 denies (JSON).
+        // Mock alternates: odd calls = S1 XML, even calls = S2 JSON deny.
+        let callCount = 0;
+        mockFetch.mockImplementation(() => {
+            callCount++;
+            const isS1 = callCount % 2 === 1;
+            const text = isS1 ? "<block>yes</block>" : '{"decision":"deny","reason":"Dangerous"}';
+            return Promise.resolve({
+                ok: true,
+                status: 200,
+                text: async () => "",
+                json: async () => ({ content: [{ type: "text", text }] }),
+            });
+        });
 
         const sessionId = `degrade-test-${Date.now()}`;
 
@@ -798,7 +866,8 @@ describe("block count tracking", () => {
 describe("prompt caching", () => {
     beforeEach(() => {
         mockGetApiKey.mockReturnValue("test-key");
-        mockFetch.mockResolvedValue(mockApiResponse("approve", "ok"));
+        // S1 approves via XML so the chain completes with one call
+        mockFetch.mockResolvedValue(mockS1Response("no"));
     });
 
     it("attaches cache_control to all system blocks", async () => {
@@ -835,7 +904,8 @@ describe("user rules end-to-end", () => {
         // Write a test user_rules object - this exercises configSetObject
         configSetObject("safety.user_rules", { block_rules: ["TEST_RULE_BLOCK_MARKER"] });
         mockGetApiKey.mockReturnValue("test-key");
-        mockFetch.mockResolvedValue(mockApiResponse("approve", "Safe"));
+        // S1 approves via XML so the chain completes with one call
+        mockFetch.mockResolvedValue(mockS1Response("no"));
     });
 
     afterEach(() => {
@@ -877,10 +947,11 @@ describe("approval cache integration", () => {
     });
 
     it("repeated identical Bash command skips the API on second call", async () => {
+        // S1 approves via XML - one fetch call total for the first invocation
         const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
             new Response(
                 JSON.stringify({
-                    content: [{ type: "text", text: '{"decision":"approve","reason":"ok"}' }],
+                    content: [{ type: "text", text: "<block>no</block>" }],
                 })
             )
         );
@@ -889,20 +960,122 @@ describe("approval cache integration", () => {
         const r2 = await checkToolSafety("Bash", { command: "echo hello" });
         expect(r1?.decision).toBe("approve");
         expect(r2?.decision).toBe("approve");
+        // Only one API call - the second is served from the approval cache
         expect(fetchSpy).toHaveBeenCalledTimes(1);
     });
 
     it("deny is not cached - second identical call hits API again", async () => {
-        const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-            new Response(
-                JSON.stringify({
-                    content: [{ type: "text", text: '{"decision":"deny","reason":"no"}' }],
-                })
-            )
-        );
+        // Each call: S1 escalates, S2 denies - two fetch calls per invocation
+        const fetchSpy = vi
+            .spyOn(globalThis, "fetch")
+            .mockResolvedValueOnce(new Response(JSON.stringify({ content: [{ type: "text", text: "<block>yes</block>" }] })))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ content: [{ type: "text", text: '{"decision":"deny","reason":"no"}' }] })))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ content: [{ type: "text", text: "<block>yes</block>" }] })))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ content: [{ type: "text", text: '{"decision":"deny","reason":"no"}' }] })));
 
-        await checkToolSafety("Bash", { command: "rm -rf /" });
-        await checkToolSafety("Bash", { command: "rm -rf /" });
-        expect(fetchSpy).toHaveBeenCalledTimes(2);
+        const r1 = await checkToolSafety("Bash", { command: "rm -rf /" });
+        const r2 = await checkToolSafety("Bash", { command: "rm -rf /" });
+        expect(r1?.decision).toBe("deny");
+        expect(r2?.decision).toBe("deny");
+        // 4 calls total: 2 per invocation (S1 + S2), since deny is not cached
+        expect(fetchSpy).toHaveBeenCalledTimes(4);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// classifier mode selection
+// ---------------------------------------------------------------------------
+
+describe("classifier mode selection", () => {
+    let fetchSpy: ReturnType<typeof vi.spyOn>;
+    afterEach(() => {
+        vi.restoreAllMocks();
+        approvalCache.clear();
+    });
+    beforeEach(() => approvalCache.clear());
+
+    it("default mode is two-stage (S1 uses 64-token budget and stop_sequences)", async () => {
+        mockGetApiKey.mockReturnValue("test-key");
+        fetchSpy = vi
+            .spyOn(globalThis, "fetch")
+            .mockResolvedValue(new Response(JSON.stringify({ content: [{ type: "text", text: "<block>no</block>" }] })));
+        await checkToolSafety("Bash", { command: "rm something" });
+        const body = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
+        expect(body.max_tokens).toBe(64);
+        expect(body.stop_sequences).toEqual(["</block>"]);
+    });
+
+    it("needs_context two-pass: S1 escalates, S2 returns needs_context, second call resolves", async () => {
+        mockGetApiKey.mockReturnValue("test-key");
+        fetchSpy = vi
+            .spyOn(globalThis, "fetch")
+            .mockResolvedValueOnce(new Response(JSON.stringify({ content: [{ type: "text", text: "<block>yes</block>" }] })))
+            .mockResolvedValueOnce(
+                new Response(
+                    JSON.stringify({ content: [{ type: "text", text: '{"decision":"needs_context","reason":"check","files":["/tmp/script.sh"]}' }] })
+                )
+            )
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ content: [{ type: "text", text: '{"decision":"approve","reason":"ok after inspection"}' }] }))
+            );
+        const r = await checkToolSafety("Bash", { command: "./script.sh" });
+        expect(r?.decision).toBe("approve");
+        expect(fetchSpy).toHaveBeenCalledTimes(3);
+    });
+
+    it("single-stage thinking mode uses 4096 budget, no stop_sequences, has thinking", async () => {
+        vi.resetModules();
+        vi.doMock("../utils.js", async (importOriginal) => {
+            const actual = (await importOriginal()) as Record<string, unknown>;
+            return {
+                ...actual,
+                configGet: (k: string, d?: string) => {
+                    if (k === "safety.classifier_mode") return "single-stage";
+                    if (k === "safety.single_stage_variant") return "thinking";
+                    if (k === "safety.billing_cch") return "test";
+                    if (k === "safety.billing_cc_version") return "test.0";
+                    return d ?? null;
+                },
+                configGetObject: () => undefined,
+            };
+        });
+        fetchSpy = vi
+            .spyOn(globalThis, "fetch")
+            .mockResolvedValue(new Response(JSON.stringify({ content: [{ type: "text", text: '{"decision":"approve","reason":"ok"}' }] })));
+        const mod = await import("../llm-safety-check.js?single-thinking");
+        await mod.checkToolSafety("Bash", { command: "rm something" });
+        const body = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
+        expect(body.max_tokens).toBe(4096);
+        expect(body.stop_sequences).toBeUndefined();
+        expect(body.thinking).toEqual({ type: "adaptive" });
+        vi.doUnmock("../utils.js");
+    });
+
+    it("single-stage fast mode uses 256 budget, has stop_sequences, no thinking", async () => {
+        vi.resetModules();
+        vi.doMock("../utils.js", async (importOriginal) => {
+            const actual = (await importOriginal()) as Record<string, unknown>;
+            return {
+                ...actual,
+                configGet: (k: string, d?: string) => {
+                    if (k === "safety.classifier_mode") return "single-stage";
+                    if (k === "safety.single_stage_variant") return "fast";
+                    if (k === "safety.billing_cch") return "test";
+                    if (k === "safety.billing_cc_version") return "test.0";
+                    return d ?? null;
+                },
+                configGetObject: () => undefined,
+            };
+        });
+        fetchSpy = vi
+            .spyOn(globalThis, "fetch")
+            .mockResolvedValue(new Response(JSON.stringify({ content: [{ type: "text", text: "<block>no</block>" }] })));
+        const mod = await import("../llm-safety-check.js?single-fast");
+        await mod.checkToolSafety("Bash", { command: "rm something" });
+        const body = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
+        expect(body.max_tokens).toBe(256);
+        expect(body.stop_sequences).toEqual(["</block>"]);
+        expect(body.thinking).toBeUndefined();
+        vi.doUnmock("../utils.js");
     });
 });

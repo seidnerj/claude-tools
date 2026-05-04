@@ -83,14 +83,12 @@ describe("buildClaudeArgs", () => {
 const RUN_INTEGRATION = process.env.RUN_INTEGRATION_TESTS === "1";
 
 describe.skipIf(!RUN_INTEGRATION)("openSession - integration (RUN_INTEGRATION_TESTS=1)", () => {
-    it("spawns a session in the default terminal and returns the URL", async () => {
+    it("dispatches a launcher in the default terminal and returns workspace + handlerId", async () => {
         const result = await openSession({
             workspace: process.cwd(),
             sessionName: `integ-${Date.now()}`,
-            startupTimeoutMs: 60_000,
         });
-        expect(result.sessionUrl).toMatch(/^https:\/\/claude\.ai\/code\/session_\w+$/);
+        expect(result.workspace).toBe(process.cwd());
         expect(result.handlerId).toMatch(/^(macos-default|linux-xdg|linux-alt)$/);
-        expect(typeof result.sessionId).toBe("string");
-    }, 90_000);
+    });
 });

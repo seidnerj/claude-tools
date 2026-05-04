@@ -224,7 +224,7 @@ Begin your response immediately with the <block> tag.`;
 
 const DIRECTIVE_SINGLE_THINKING = `## Single-Stage Thinking Mode
 
-Apply the full classification process from the system prompt. Emit the JSON verdict specified in the Response Format section. You may use needs_context to request file contents before deciding.`;
+Apply the full classification process from the system prompt. You may use extended thinking before your verdict if reasoning is needed. Emit the JSON verdict specified in the Response Format section. You may use needs_context to request file contents before deciding.`;
 
 /**
  * Return the directive text appended to the user message for a given classifier stage.
@@ -240,5 +240,9 @@ export function buildStageDirective(stage: ClassifierStage): string {
             return DIRECTIVE_SINGLE_FAST;
         case "single_thinking":
             return DIRECTIVE_SINGLE_THINKING;
+        default: {
+            const _exhaustive: never = stage;
+            throw new Error(`Unhandled ClassifierStage: ${_exhaustive as string}`);
+        }
     }
 }

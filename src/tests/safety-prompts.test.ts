@@ -114,6 +114,7 @@ describe("buildStageDirective", () => {
         expect(d.toLowerCase()).toContain("stage 2");
         expect(d).toMatch(/full classification/i);
         expect(d).toMatch(/json/i);
+        expect(d).toMatch(/thinking/i);
     });
 
     it("single_fast directive emits XML and biases toward blocking", () => {
@@ -128,5 +129,6 @@ describe("buildStageDirective", () => {
         const d = buildStageDirective("single_thinking");
         expect(d).toMatch(/json/i);
         expect(d).not.toMatch(/<block>/i);
+        expect(d).toMatch(/thinking/i);
     });
 });

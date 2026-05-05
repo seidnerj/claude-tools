@@ -1,11 +1,4 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import * as os from "node:os";
-
-vi.mock("node:fs/promises", () => ({
-    writeFile: vi.fn().mockResolvedValue(undefined),
-    unlink: vi.fn().mockResolvedValue(undefined),
-    chmod: vi.fn().mockResolvedValue(undefined),
-}));
 
 vi.mock("node:fs", () => ({
     existsSync: vi.fn().mockReturnValue(false),
@@ -15,13 +8,11 @@ vi.mock("node:child_process", () => ({
     spawnSync: vi.fn().mockReturnValue({ status: 0 }),
 }));
 
-import * as fsPromises from "node:fs/promises";
 import * as fsSync from "node:fs";
 import * as childProcess from "node:child_process";
 import { detectTerminalHandler, launchInDefaultTerminal, NoGUITerminalError, TerminalLaunchError } from "../terminal-launcher.js";
 
 const spawnSyncMock = vi.mocked(childProcess.spawnSync);
-const writeFileMock = vi.mocked(fsPromises.writeFile);
 const existsSyncMock = vi.mocked(fsSync.existsSync);
 
 describe("detectTerminalHandler", () => {
@@ -54,39 +45,14 @@ describe("detectTerminalHandler", () => {
         expect(detectTerminalHandler()?.id).toBe("macos-default");
     });
 
-    it("selects linux-xdg on linux when xdg-terminal-exec is on PATH", () => {
+    it("returns null on linux (not supported)", () => {
         setPlatform("linux");
-        spawnSyncMock.mockImplementation(((_cmd: string, args?: readonly string[]) => {
-            const arg = args?.[1] ?? "";
-            return { status: arg === "xdg-terminal-exec" ? 0 : 1 } as ReturnType<typeof childProcess.spawnSync>;
-        }) as typeof childProcess.spawnSync);
-        expect(detectTerminalHandler()?.id).toBe("linux-xdg");
-    });
-
-    it("falls back to linux-alt when only x-terminal-emulator is on PATH", () => {
-        setPlatform("linux");
-        spawnSyncMock.mockImplementation(((_cmd: string, args?: readonly string[]) => {
-            const arg = args?.[1] ?? "";
-            return { status: arg === "x-terminal-emulator" ? 0 : 1 } as ReturnType<typeof childProcess.spawnSync>;
-        }) as typeof childProcess.spawnSync);
-        expect(detectTerminalHandler()?.id).toBe("linux-alt");
-    });
-
-    it("returns null on linux with neither binary", () => {
-        setPlatform("linux");
-        spawnSyncMock.mockReturnValue({ status: 1 } as ReturnType<typeof childProcess.spawnSync>);
         expect(detectTerminalHandler()).toBeNull();
     });
 
-    it("returns null on win32 (Windows not supported in v1)", () => {
+    it("returns null on win32 (not supported)", () => {
         setPlatform("win32");
         expect(detectTerminalHandler()).toBeNull();
-    });
-
-    it("prefers linux-xdg over linux-alt when both are available", () => {
-        setPlatform("linux");
-        spawnSyncMock.mockReturnValue({ status: 0 } as ReturnType<typeof childProcess.spawnSync>);
-        expect(detectTerminalHandler()?.id).toBe("linux-xdg");
     });
 });
 
@@ -97,7 +63,6 @@ describe("launchInDefaultTerminal - macOS", () => {
         originalPlatform = process.platform;
         Object.defineProperty(process, "platform", { value: "darwin" });
         spawnSyncMock.mockReturnValue({ status: 0 } as ReturnType<typeof childProcess.spawnSync>);
-        writeFileMock.mockResolvedValue(undefined);
         existsSyncMock.mockReturnValue(false);
     });
 
@@ -106,31 +71,47 @@ describe("launchInDefaultTerminal - macOS", () => {
         vi.clearAllMocks();
     });
 
-    it("writes a .command launcher script and calls open (no -b flag) when iTerm is absent", async () => {
+    it("dispatches via osascript to Terminal.app `do script` with cd && cmd line when iTerm is absent", async () => {
+        // ps output: login(500, ppid 100) -> -zsh(502, ppid 500) -> claude(503, ppid 502)
+        // The "root" on this tty is 500 (its ppid 100 is not on the tty).
+        spawnSyncMock.mockImplementation(((cmd: string, args?: readonly string[]) => {
+            if (cmd === "osascript") return { status: 0, stdout: "/dev/ttys013\n", stderr: "" } as ReturnType<typeof childProcess.spawnSync>;
+            if (cmd === "ps")
+                return { status: 0, stdout: "  500   100\n  502   500\n  503   502\n", stderr: "" } as ReturnType<typeof childProcess.spawnSync>;
+            return { status: 0 } as ReturnType<typeof childProcess.spawnSync>;
+        }) as typeof childProcess.spawnSync);
+
         const result = await launchInDefaultTerminal({
             cwd: "/path/to/workspace",
             cmd: ["claude", "--rc"],
         });
 
         expect(result.handlerId).toBe("macos-default");
+        expect(result.tty).toBe("/dev/ttys013");
+        expect(result.pid).toBe(500);
 
-        const writeCall = writeFileMock.mock.calls[0];
-        const launcherPath = writeCall[0] as string;
-        const scriptContent = writeCall[1] as string;
+        const osaCall = spawnSyncMock.mock.calls.find((c) => c[0] === "osascript");
+        expect(osaCall).toBeDefined();
+        const osaArgs = osaCall![1] as string[];
+        // multiple -e clauses, joined by alternating positions
+        expect(osaArgs.filter((a) => a === "-e").length).toBeGreaterThanOrEqual(3);
+        expect(osaArgs.join("\n")).toContain(`tell application "Terminal"`);
+        expect(osaArgs.join("\n")).toContain(`do script "cd '/path/to/workspace' && 'claude' '--rc'"`);
+        expect(osaArgs.join("\n")).toContain(`return tty of t`);
+        expect(spawnSyncMock.mock.calls.find((c) => c[0] === "open")).toBeUndefined();
 
-        expect(launcherPath).toMatch(/claude-tools-launcher-[\w-]+\.command$/);
-        expect(launcherPath.startsWith(os.tmpdir())).toBe(true);
-        expect(scriptContent).toContain("#!/bin/bash");
-        expect(scriptContent).toContain("cd '/path/to/workspace'");
-        expect(scriptContent).toContain("'claude' '--rc'");
-
-        const openCall = spawnSyncMock.mock.calls.find((c) => c[0] === "open");
-        expect(openCall).toBeDefined();
-        expect(openCall![1]).toEqual([launcherPath]);
+        const psCall = spawnSyncMock.mock.calls.find((c) => c[0] === "ps");
+        expect(psCall![1]).toEqual(["-t", "ttys013", "-o", "pid=,ppid="]);
     });
 
-    it("writes the .command and calls open -b com.googlecode.iterm2 when iTerm is installed", async () => {
+    it("dispatches via osascript to iTerm `write text` into a default-profile window when iTerm is installed", async () => {
         existsSyncMock.mockImplementation((p: fsSync.PathLike) => String(p).endsWith("/iTerm.app"));
+        spawnSyncMock.mockImplementation(((cmd: string) => {
+            if (cmd === "osascript") return { status: 0, stdout: "/dev/ttys042\n", stderr: "" } as ReturnType<typeof childProcess.spawnSync>;
+            if (cmd === "ps")
+                return { status: 0, stdout: " 1234   99\n 1235 1234\n 1236 1235\n", stderr: "" } as ReturnType<typeof childProcess.spawnSync>;
+            return { status: 0 } as ReturnType<typeof childProcess.spawnSync>;
+        }) as typeof childProcess.spawnSync);
 
         const result = await launchInDefaultTerminal({
             cwd: "/path/to/workspace",
@@ -138,17 +119,35 @@ describe("launchInDefaultTerminal - macOS", () => {
         });
 
         expect(result.handlerId).toBe("macos-iterm");
+        expect(result.tty).toBe("/dev/ttys042");
+        expect(result.pid).toBe(1234);
 
-        const launcherPath = writeFileMock.mock.calls[0][0] as string;
-        const openCall = spawnSyncMock.mock.calls.find((c) => c[0] === "open");
-        expect(openCall).toBeDefined();
-        expect(openCall![1]).toEqual(["-b", "com.googlecode.iterm2", launcherPath]);
+        const osaCall = spawnSyncMock.mock.calls.find((c) => c[0] === "osascript");
+        expect(osaCall).toBeDefined();
+        const osaArgs = osaCall![1] as string[];
+        expect(osaArgs.join("\n")).toContain(`tell application "iTerm"`);
+        expect(osaArgs.join("\n")).toContain(`current session of (create window with default profile)`);
+        expect(osaArgs.join("\n")).toContain(`write text "cd '/path/to/workspace' && 'claude' '--rc'"`);
+        expect(osaArgs.join("\n")).toContain(`return tty of s`);
+        expect(spawnSyncMock.mock.calls.find((c) => c[0] === "open")).toBeUndefined();
     });
 
-    it("throws TerminalLaunchError when open exits non-zero (iTerm absent)", async () => {
+    it("returns tty/pid as undefined when ps fails to find a session leader", async () => {
+        spawnSyncMock.mockImplementation(((cmd: string) => {
+            if (cmd === "osascript") return { status: 0, stdout: "/dev/ttys099\n", stderr: "" } as ReturnType<typeof childProcess.spawnSync>;
+            if (cmd === "ps") return { status: 1, stdout: "", stderr: "ps: no such tty" } as ReturnType<typeof childProcess.spawnSync>;
+            return { status: 0 } as ReturnType<typeof childProcess.spawnSync>;
+        }) as typeof childProcess.spawnSync);
+
+        const result = await launchInDefaultTerminal({ cwd: "/x", cmd: ["claude"] });
+        expect(result.tty).toBe("/dev/ttys099");
+        expect(result.pid).toBeUndefined();
+    });
+
+    it("throws TerminalLaunchError when osascript exits non-zero (iTerm absent)", async () => {
         existsSyncMock.mockReturnValue(false);
         spawnSyncMock.mockImplementation(((cmd: string) => {
-            if (cmd === "open") return { status: 1, stderr: Buffer.from("LSOpenURLs failed") } as ReturnType<typeof childProcess.spawnSync>;
+            if (cmd === "osascript") return { status: 1, stderr: Buffer.from("execution error") } as ReturnType<typeof childProcess.spawnSync>;
             return { status: 0 } as ReturnType<typeof childProcess.spawnSync>;
         }) as typeof childProcess.spawnSync);
 
@@ -158,10 +157,10 @@ describe("launchInDefaultTerminal - macOS", () => {
         });
     });
 
-    it("throws TerminalLaunchError with macos-iterm handlerId when iTerm path fails", async () => {
+    it("throws TerminalLaunchError with macos-iterm handlerId when iTerm osascript fails", async () => {
         existsSyncMock.mockImplementation((p: fsSync.PathLike) => String(p).endsWith("/iTerm.app"));
         spawnSyncMock.mockImplementation(((cmd: string) => {
-            if (cmd === "open") return { status: 1, stderr: Buffer.from("not allowed") } as ReturnType<typeof childProcess.spawnSync>;
+            if (cmd === "osascript") return { status: 1, stderr: Buffer.from("not allowed") } as ReturnType<typeof childProcess.spawnSync>;
             return { status: 0 } as ReturnType<typeof childProcess.spawnSync>;
         }) as typeof childProcess.spawnSync);
 
@@ -172,13 +171,11 @@ describe("launchInDefaultTerminal - macOS", () => {
     });
 });
 
-describe("launchInDefaultTerminal - Linux", () => {
+describe("launchInDefaultTerminal - non-macOS", () => {
     let originalPlatform: NodeJS.Platform;
 
     beforeEach(() => {
         originalPlatform = process.platform;
-        Object.defineProperty(process, "platform", { value: "linux" });
-        spawnSyncMock.mockReturnValue({ status: 0 } as ReturnType<typeof childProcess.spawnSync>);
     });
 
     afterEach(() => {
@@ -186,15 +183,15 @@ describe("launchInDefaultTerminal - Linux", () => {
         vi.clearAllMocks();
     });
 
-    it("invokes xdg-terminal-exec with the right command string", async () => {
-        await launchInDefaultTerminal({ cwd: "/x", cmd: ["claude", "--rc"] });
-        const launchCall = spawnSyncMock.mock.calls.find((c) => c[0] === "xdg-terminal-exec");
-        expect(launchCall).toBeDefined();
-        expect(launchCall![1]).toEqual(["bash", "-c", "cd '/x' && 'claude' '--rc'"]);
+    it("throws NoGUITerminalError on linux", async () => {
+        Object.defineProperty(process, "platform", { value: "linux" });
+        await expect(launchInDefaultTerminal({ cwd: "/x", cmd: ["claude"] })).rejects.toMatchObject({
+            name: "NoGUITerminalError",
+        });
     });
 
-    it("throws NoGUITerminalError when no Linux launcher binary is on PATH", async () => {
-        spawnSyncMock.mockReturnValue({ status: 1 } as ReturnType<typeof childProcess.spawnSync>);
+    it("throws NoGUITerminalError on win32", async () => {
+        Object.defineProperty(process, "platform", { value: "win32" });
         await expect(launchInDefaultTerminal({ cwd: "/x", cmd: ["claude"] })).rejects.toMatchObject({
             name: "NoGUITerminalError",
         });
@@ -205,7 +202,7 @@ describe("error classes", () => {
     it("NoGUITerminalError has stable name", () => {
         const e = new NoGUITerminalError();
         expect(e.name).toBe("NoGUITerminalError");
-        expect(e.message).toContain("openSession requires a GUI terminal");
+        expect(e.message).toContain("macOS-only");
     });
 
     it("TerminalLaunchError exposes handlerId and detail", () => {

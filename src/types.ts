@@ -558,10 +558,23 @@ export type ClassifierStage = "s1" | "s2" | "single_fast" | "single_thinking";
 export interface OpenSessionResult {
     /** The absolute workspace path used to start the session. */
     workspace: string;
-    /** ID of the OS-handler that launched the session ("macos-default", "linux-xdg", "linux-alt"). */
+    /** ID of the macOS handler that launched the session ("macos-iterm" or "macos-default"). */
     handlerId: string;
     /** Present only when the caller provided a sessionName for a new session. */
     sessionName?: string;
     /** Present only when the session was resumed. Echoes the value passed as `resume` verbatim. */
     resumedSessionId?: string;
+    /**
+     * PID of the session leader for the new terminal (the shell ancestor
+     * of `claude` whose `pid == sid`). Killing this PID terminates the
+     * entire session, including the shell and the `claude` process.
+     * Always populated on macOS launches; undefined only in rare ps races.
+     */
+    terminalPid?: number;
+    /**
+     * Controlling tty path of the new terminal session, e.g. `/dev/ttys013`.
+     * Useful for advanced callers that want to walk the process group.
+     * Always populated on macOS launches; undefined only in rare ps races.
+     */
+    terminalTty?: string;
 }

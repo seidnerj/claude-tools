@@ -61,19 +61,22 @@ function validateInputs(opts: OpenSessionOptions): void {
 }
 
 /**
- * Launch claude --rc in the user's default OS terminal app.
+ * Launch claude --rc in a new macOS terminal window.
  *
  * Behaves like a user typing `claude --rc` in a fresh shell: validates the
- * workspace is trusted (via `~/.claude.json`), opens a new terminal window
- * (macOS .command + open; Linux xdg-terminal-exec / x-terminal-emulator),
- * and returns once the launcher has been dispatched. The session URL is
- * not returned - claude displays it in the new terminal's TUI and the
- * remote-control session shows up in the iOS app and at claude.ai/code.
+ * workspace is trusted (via `~/.claude.json`), opens a new iTerm2 (preferred)
+ * or Terminal.app window with the user's default profile, and feeds the
+ * `cd <workspace> && claude --rc ...` command line as if the user typed it.
+ * The user's full shell init (.zshrc/.bash_profile/etc.) runs and `chpwd`
+ * hooks like direnv fire on `cd`. Returns once the launcher has been
+ * dispatched, with the new session's tty and session-leader PID for callers
+ * that want a kill handle.
+ *
+ * Currently macOS-only. On other platforms throws NoGUITerminalError - run
+ * `claude --rc` directly in your shell instead.
  *
  * Throws WorkspaceNotTrustedError if the workspace is not trusted (run
- * `claude` once in that directory to accept the trust dialog), or
- * NoGUITerminalError on hosts without a GUI terminal launcher (use
- * `claude --rc` directly in a shell instead).
+ * `claude` once in that directory to accept the trust dialog).
  */
 export async function openSession(opts: OpenSessionOptions): Promise<OpenSessionResult> {
     validateInputs(opts);
@@ -83,12 +86,14 @@ export async function openSession(opts: OpenSessionOptions): Promise<OpenSession
     }
 
     const cmd = ["claude", ...buildClaudeArgs(opts)];
-    const { handlerId } = await launchInDefaultTerminal({ cwd: opts.workspace, cmd });
+    const { handlerId, tty, pid } = await launchInDefaultTerminal({ cwd: opts.workspace, cmd });
 
     return {
         ...(opts.sessionName !== undefined && { sessionName: opts.sessionName }),
         ...(opts.resume !== undefined && { resumedSessionId: opts.resume }),
         workspace: opts.workspace,
         handlerId,
+        ...(tty !== undefined && { terminalTty: tty }),
+        ...(pid !== undefined && { terminalPid: pid }),
     };
 }

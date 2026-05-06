@@ -45,6 +45,8 @@ end tell
 
 `write text` and `do script` deliver the command line as if typed at the prompt. Because the shell is interactive, `PROMPT_COMMAND` (bash) and `precmd_functions` / `chpwd_functions` (zsh) all fire normally. direnv loads `.envrc` on the `cd`. Aliases, prompt customizations, and PATH from `.zshrc` are all in place.
 
+The command line ends with `; exit` so the shell terminates unconditionally once claude returns - cleanly (`/exit`, iOS-side close), via signal (Cmd+W on the window, `kill <terminalPid>`), or on crash. The terminal session ends, and the window's fate is governed by the profile's "When session ends" setting (typically Close, sometimes Hold). We use `;` rather than `&&` because openSession is primarily an unattended/MCP-driven tool: leaving orphan windows behind on the rare crash case is worse UX than auto-closing.
+
 The PID we return (`terminalPid`) is the **session leader** for the new tty - the only process on that tty whose parent is _not_ also on the tty. Killing it sends SIGHUP through the controlling-tty foreground group; the shell receives it, propagates to claude, and the entire session tears down with one signal.
 
 ## Why iTerm2 is preferred over Terminal.app

@@ -96,7 +96,7 @@ describe("launchInDefaultTerminal - macOS", () => {
         // multiple -e clauses, joined by alternating positions
         expect(osaArgs.filter((a) => a === "-e").length).toBeGreaterThanOrEqual(3);
         expect(osaArgs.join("\n")).toContain(`tell application "Terminal"`);
-        expect(osaArgs.join("\n")).toContain(`do script "cd '/path/to/workspace' && 'claude' '--rc'"`);
+        expect(osaArgs.join("\n")).toContain(`do script "cd '/path/to/workspace' && 'claude' '--rc'; exit"`);
         expect(osaArgs.join("\n")).toContain(`return tty of t`);
         expect(spawnSyncMock.mock.calls.find((c) => c[0] === "open")).toBeUndefined();
 
@@ -127,7 +127,7 @@ describe("launchInDefaultTerminal - macOS", () => {
         const osaArgs = osaCall![1] as string[];
         expect(osaArgs.join("\n")).toContain(`tell application "iTerm"`);
         expect(osaArgs.join("\n")).toContain(`current session of (create window with default profile)`);
-        expect(osaArgs.join("\n")).toContain(`write text "cd '/path/to/workspace' && 'claude' '--rc'"`);
+        expect(osaArgs.join("\n")).toContain(`write text "cd '/path/to/workspace' && 'claude' '--rc'; exit"`);
         expect(osaArgs.join("\n")).toContain(`return tty of s`);
         expect(spawnSyncMock.mock.calls.find((c) => c[0] === "open")).toBeUndefined();
     });

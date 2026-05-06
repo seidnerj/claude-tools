@@ -71,7 +71,11 @@ interface TerminalHandler {
  * etc.) fire on `cd` before claude is launched.
  */
 function launchMacosViaOsascript(handlerId: string, cwd: string, cmd: string[], target: "iterm" | "terminal"): LaunchOutcome {
-    const commandLine = `cd ${shellQuote(cwd)} && ${cmd.map(shellQuote).join(" ")}`;
+    // Trailing `; exit` closes the spawned shell when `cmd` returns, which
+    // ends the iTerm/Terminal session and (per profile) closes the window.
+    // `;` (not `&&`) so we exit unconditionally - even if claude crashes,
+    // we don't leave orphan windows behind for unattended/MCP-driven use.
+    const commandLine = `cd ${shellQuote(cwd)} && ${cmd.map(shellQuote).join(" ")}; exit`;
     const quoted = applescriptQuote(commandLine);
     const lines =
         target === "iterm"

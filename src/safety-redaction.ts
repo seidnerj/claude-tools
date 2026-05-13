@@ -32,6 +32,53 @@ const SAFE_BASH_PREFIXES: RegExp[] = [
 
 const UNSAFE_BASH_CHARS = /[|>]|`|\$\(/;
 
+// Tags used either as structural wrappers around untrusted content fed to the
+// classifier, or as the classifier's own response schema. Stripping these from
+// untrusted text prevents an attacker who controls that text from prematurely
+// closing our wrappers, opening a fake wrapper around adjacent content, or
+// emitting forged classifier output that downstream stages might parse.
+const NEUTRALIZE_TAGS = [
+    "block",
+    "reason",
+    "thinking",
+    "task-context",
+    "user_claude_md",
+    "untrusted-assistant",
+    "untrusted-file",
+    "untrusted-command",
+    "untrusted-description",
+    "old_string",
+    "new_string",
+    "content",
+    "prompt",
+];
+const NEUTRALIZE_TAG_RE = new RegExp(`<(/?)(${NEUTRALIZE_TAGS.join("|")})(\\s[^>]*)?>`, "gi");
+
+const DECISION_JSON_RE = /"decision"\s*:\s*"(approve|deny|prompt|needs_context)"/gi;
+const FILES_JSON_RE = /"files"\s*:\s*\[/gi;
+const DECISION_BARE_RE = /\bdecision\s*[:=]\s*"?(approve|deny|prompt|needs_context)"?/gi;
+const BLOCK_BARE_RE = /\bblock\s*[:=]\s*"?(yes|no)"?/gi;
+
+/**
+ * Strip or neutralize text that mimics classifier output schema or our own
+ * wrapper tags. Apply to any untrusted text (user/assistant transcript content,
+ * tool inputs, file contents, CLAUDE.md) before it is interpolated into the
+ * classifier's user message.
+ *
+ * Whole-tag forms only - bare angle brackets in code (`a < b`, `x => y`) pass
+ * through untouched. Bare phrases like `decision: approve` and `block: yes`
+ * are also neutralized to block plain-text laundering of classifier verdicts.
+ */
+export function neutralizeClassifierTokens(text: string): string {
+    if (!text) return text;
+    return text
+        .replace(NEUTRALIZE_TAG_RE, (_m, slash: string, tag: string) => `[neutralized-${slash ? "/" : ""}${tag}]`)
+        .replace(DECISION_JSON_RE, '"decision":"[NEUTRALIZED]"')
+        .replace(FILES_JSON_RE, '"files":[/*NEUTRALIZED*/')
+        .replace(DECISION_BARE_RE, "decision: [NEUTRALIZED]")
+        .replace(BLOCK_BARE_RE, "block: [NEUTRALIZED]");
+}
+
 /**
  * Per-tool redactors. Returning null means "skip classification" (fast-approve).
  * Returning a string means "use this string as the classifier input".
@@ -92,36 +139,38 @@ export function formatToolInput(toolName: string, toolInput: Record<string, unkn
     if (typeof redacted === "string") return redacted;
 
     if (toolName === "Bash") {
-        const command = (toolInput.command as string) ?? "";
-        const description = (toolInput.description as string) ?? "";
+        const command = neutralizeClassifierTokens((toolInput.command as string) ?? "");
+        const description = neutralizeClassifierTokens((toolInput.description as string) ?? "");
         return (
             `<untrusted-command>\n${command}\n</untrusted-command>\n` +
             `<untrusted-description>\n${description || "(none provided)"}\n</untrusted-description>`
         );
     }
     if (toolName === "Edit") {
-        const filePath = (toolInput.file_path as string) ?? "";
-        const oldStr = (toolInput.old_string as string) ?? "";
-        const newStr = (toolInput.new_string as string) ?? "";
+        const filePath = neutralizeClassifierTokens((toolInput.file_path as string) ?? "");
+        const oldStr = neutralizeClassifierTokens((toolInput.old_string as string) ?? "");
+        const newStr = neutralizeClassifierTokens((toolInput.new_string as string) ?? "");
         const replaceAll = toolInput.replace_all ? " (replace all)" : "";
         return `File: ${filePath}${replaceAll}\n<old_string>\n${oldStr}\n</old_string>\n<new_string>\n${newStr}\n</new_string>`;
     }
     if (toolName === "Write") {
-        const filePath = (toolInput.file_path as string) ?? "";
+        const filePath = neutralizeClassifierTokens((toolInput.file_path as string) ?? "");
         const content = (toolInput.content as string) ?? "";
         const truncated = content.length > 5000 ? content.slice(0, 5000) + "\n... (truncated)" : content;
-        return `File: ${filePath}\n<content>\n${truncated}\n</content>`;
+        return `File: ${filePath}\n<content>\n${neutralizeClassifierTokens(truncated)}\n</content>`;
     }
     if (toolName === "WebFetch") {
-        return `URL: ${(toolInput.url as string) ?? ""}\nPrompt: ${(toolInput.prompt as string) ?? ""}`;
+        const url = neutralizeClassifierTokens((toolInput.url as string) ?? "");
+        const prompt = neutralizeClassifierTokens((toolInput.prompt as string) ?? "");
+        return `URL: ${url}\nPrompt: ${prompt}`;
     }
     if (toolName === "WebSearch") {
-        return `Query: ${(toolInput.query as string) ?? ""}`;
+        return `Query: ${neutralizeClassifierTokens((toolInput.query as string) ?? "")}`;
     }
     if (toolName === "Agent") {
-        const prompt = (toolInput.prompt as string) ?? "";
-        const subType = (toolInput.subagent_type as string) ?? "";
+        const prompt = neutralizeClassifierTokens((toolInput.prompt as string) ?? "");
+        const subType = neutralizeClassifierTokens((toolInput.subagent_type as string) ?? "");
         return `Subagent type: ${subType || "general-purpose"}\n<prompt>\n${prompt}\n</prompt>`;
     }
-    return JSON.stringify(toolInput, null, 2);
+    return neutralizeClassifierTokens(JSON.stringify(toolInput, null, 2));
 }

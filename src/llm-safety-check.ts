@@ -6,11 +6,25 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { readFile, stat } from "node:fs/promises";
 import * as os from "node:os";
+import { randomUUID } from "node:crypto";
 import { getApiKey, configGet } from "./utils.js";
-import type { SafetyCheckResult, HookInput, HookOutput, BlockState, ClassifierMode, SingleStageVariant, ApiUsageEntry } from "./types.js";
-import { isFastApprove, formatToolInput } from "./safety-redaction.js";
+import type {
+    SafetyCheckResult,
+    HookInput,
+    HookOutput,
+    BlockState,
+    ClassifierMode,
+    SingleStageVariant,
+    ApiUsageEntry,
+    ContextLevel,
+    ContextLevelConfig,
+    SafetyStageRecord,
+    SafetyDecisionLog,
+} from "./types.js";
+import { isFastApprove, formatToolInput, neutralizeClassifierTokens } from "./safety-redaction.js";
 import { runStage, runTwoStage, runSingleStage, aggregateUsage, lastModel } from "./safety-stages.js";
 import { approvalCache } from "./safety-cache.js";
+import { writeDecisionLog } from "./safety-debug-log.js";
 
 export { isFastApprove, formatToolInput } from "./safety-redaction.js";
 
@@ -88,12 +102,18 @@ interface TranscriptEntry {
 }
 
 function extractTextContent(content: unknown): string {
-    if (typeof content === "string") return content;
-    if (!Array.isArray(content)) return "";
-    return content
-        .filter((block: Record<string, unknown>) => block.type === "text" && typeof block.text === "string")
-        .map((block: Record<string, unknown>) => block.text as string)
-        .join("\n");
+    let text: string;
+    if (typeof content === "string") {
+        text = content;
+    } else if (Array.isArray(content)) {
+        text = content
+            .filter((block: Record<string, unknown>) => block.type === "text" && typeof block.text === "string")
+            .map((block: Record<string, unknown>) => block.text as string)
+            .join("\n");
+    } else {
+        return "";
+    }
+    return neutralizeClassifierTokens(text);
 }
 
 function summarizeToolUse(block: Record<string, unknown>): string | null {
@@ -102,29 +122,31 @@ function summarizeToolUse(block: Record<string, unknown>): string | null {
     if (READ_ONLY_TOOLS.has(name)) return null;
     const input = block.input as Record<string, unknown> | undefined;
     if (name === "Bash") {
-        const cmd = ((input?.command as string | undefined) ?? "").slice(0, 200);
+        const cmd = neutralizeClassifierTokens(((input?.command as string | undefined) ?? "").slice(0, 200));
         return `[tool_use ${name}] ${cmd}`;
     }
     if (name === "Edit" || name === "Write") {
-        return `[tool_use ${name}] ${(input?.file_path as string | undefined) ?? ""}`;
+        const filePath = neutralizeClassifierTokens((input?.file_path as string | undefined) ?? "");
+        return `[tool_use ${name}] ${filePath}`;
     }
     if (name === "WebFetch") {
-        return `[tool_use ${name}] ${(input?.url as string | undefined) ?? ""}`;
+        const url = neutralizeClassifierTokens((input?.url as string | undefined) ?? "");
+        return `[tool_use ${name}] ${url}`;
     }
     if (name === "Agent") {
-        const t = (input?.subagent_type as string | undefined) ?? "general";
+        const t = neutralizeClassifierTokens((input?.subagent_type as string | undefined) ?? "general");
         return `[tool_use ${name}/${t}]`;
     }
     return `[tool_use ${name}]`;
 }
 
 function extractAssistantContent(content: unknown, includeToolUse: boolean): string {
-    if (typeof content === "string") return content;
+    if (typeof content === "string") return neutralizeClassifierTokens(content);
     if (!Array.isArray(content)) return "";
     const parts: string[] = [];
     for (const block of content as Array<Record<string, unknown>>) {
         if (block.type === "text" && typeof block.text === "string") {
-            parts.push(block.text);
+            parts.push(neutralizeClassifierTokens(block.text));
         } else if (includeToolUse && block.type === "tool_use") {
             const summary = summarizeToolUse(block);
             if (summary) parts.push(summary);
@@ -218,16 +240,24 @@ export function extractTaskContext(transcriptPath: string, contextLevel: "full" 
 
 /**
  * Read requested files from disk, skipping any that don't exist, are too
- * large, or aren't regular files.
+ * large, or aren't regular files. Optionally consults an in-decision cache
+ * so repeated requests for the same path within one decision (e.g. across
+ * auto-mode escalation passes) only hit disk once.
  */
-export async function resolveRequestedFiles(paths: string[]): Promise<Map<string, string>> {
+export async function resolveRequestedFiles(paths: string[], cache?: Map<string, string>): Promise<Map<string, string>> {
     const results = new Map<string, string>();
     for (const filePath of paths) {
+        if (cache?.has(filePath)) {
+            results.set(filePath, cache.get(filePath) as string);
+            continue;
+        }
         try {
             const info = await stat(filePath);
             if (!info.isFile() || info.size > MAX_FILE_SIZE) continue;
             const contents = await readFile(filePath, "utf-8");
-            results.set(filePath, contents);
+            const neutralized = neutralizeClassifierTokens(contents);
+            results.set(filePath, neutralized);
+            cache?.set(filePath, neutralized);
         } catch {
             // File doesn't exist or isn't readable - skip
         }
@@ -239,7 +269,7 @@ function readClaudeMd(cwd?: string): string | null {
     if (!cwd) return null;
     const claudeMdPath = path.join(cwd, "CLAUDE.md");
     try {
-        return fs.readFileSync(claudeMdPath, "utf-8");
+        return neutralizeClassifierTokens(fs.readFileSync(claudeMdPath, "utf-8"));
     } catch {
         return null;
     }
@@ -285,20 +315,205 @@ function validateVariant(raw: string): SingleStageVariant {
     return "thinking";
 }
 
+function validateContextLevelConfig(raw: string): ContextLevelConfig {
+    if (raw === "full" || raw === "user-only" || raw === "none" || raw === "auto") return raw;
+    process.stderr.write(`LLM safety check: unknown safety.context_level "${raw}", falling back to "user-only"\n`);
+    return "user-only";
+}
+
+/**
+ * Synthesize stage records from the per-call usage entries appended during a
+ * single evaluateAtLevel call. Two-stage with usageDelta length 1 means S1
+ * cleared; length 2 means S1 escalated to S2. Single-stage always pushes one
+ * entry. The post-needs_context re-run appends one more entry with files.
+ */
+function buildStageRecords(
+    contextLevel: ContextLevel,
+    mode: ClassifierMode,
+    variant: SingleStageVariant,
+    usageDelta: ApiUsageEntry[],
+    firstResult: SafetyCheckResult | null,
+    secondResult: SafetyCheckResult | null,
+    filesRequested: string[] | undefined,
+    filesResolved: string[] | undefined,
+    firstMs: number,
+    secondMs: number
+): SafetyStageRecord[] {
+    const records: SafetyStageRecord[] = [];
+    let idx = 0;
+    if (mode === "two-stage") {
+        if (usageDelta.length >= 1) {
+            const s1Parsed = usageDelta.length === 1 && firstResult ? { decision: firstResult.decision, reason: firstResult.reason } : undefined;
+            records.push({
+                stage: "S1",
+                context_level_used: contextLevel,
+                with_files: false,
+                model: usageDelta[idx].model,
+                usage: usageDelta[idx].usage,
+                ms: usageDelta.length === 1 ? firstMs : Math.floor(firstMs / 2),
+                parsed: s1Parsed,
+            });
+            idx++;
+        }
+        if (usageDelta.length >= 2) {
+            records.push({
+                stage: "S2",
+                context_level_used: contextLevel,
+                with_files: false,
+                model: usageDelta[idx].model,
+                usage: usageDelta[idx].usage,
+                ms: Math.floor(firstMs / 2),
+                parsed: firstResult ? { decision: firstResult.decision, reason: firstResult.reason, files: firstResult.files } : undefined,
+            });
+            idx++;
+        }
+    } else {
+        const stage = variant === "fast" ? "single_fast" : "single_thinking";
+        if (usageDelta.length >= 1) {
+            records.push({
+                stage,
+                context_level_used: contextLevel,
+                with_files: false,
+                model: usageDelta[idx].model,
+                usage: usageDelta[idx].usage,
+                ms: firstMs,
+                parsed: firstResult ? { decision: firstResult.decision, reason: firstResult.reason, files: firstResult.files } : undefined,
+            });
+            idx++;
+        }
+    }
+    if (secondResult && idx < usageDelta.length) {
+        const secondStage = mode === "two-stage" ? "S2" : "single_thinking";
+        records.push({
+            stage: secondStage,
+            context_level_used: contextLevel,
+            with_files: true,
+            files_requested: filesRequested,
+            files_resolved: filesResolved,
+            model: usageDelta[idx].model,
+            usage: usageDelta[idx].usage,
+            ms: secondMs,
+            parsed: { decision: secondResult.decision, reason: secondResult.reason, files: secondResult.files },
+        });
+    }
+    return records;
+}
+
+interface EvaluateAtLevelOptions {
+    apiKey: string;
+    contextLevel: ContextLevel;
+    toolName: string;
+    toolInput: Record<string, unknown>;
+    transcriptPath?: string;
+    explicitTaskContext?: string;
+    claudeMd?: string;
+    mode: ClassifierMode;
+    variant: SingleStageVariant;
+    fileCache: Map<string, string>;
+    usageEntries: ApiUsageEntry[];
+    stageRecords: SafetyStageRecord[];
+}
+
+/** Run the full S1+S2 (or single-stage) evaluation at one context level, including the needs_context re-run. */
+async function evaluateAtLevel(opts: EvaluateAtLevelOptions): Promise<SafetyCheckResult | null> {
+    const taskContext =
+        opts.explicitTaskContext !== undefined
+            ? opts.explicitTaskContext
+            : opts.transcriptPath
+              ? extractTaskContext(opts.transcriptPath, opts.contextLevel)
+              : "";
+
+    const firstMessage = buildUserMessage(opts.toolName, opts.toolInput, {
+        taskContext: taskContext || undefined,
+        claudeMd: opts.claudeMd,
+    });
+
+    const beforeIdx = opts.usageEntries.length;
+    const firstT0 = Date.now();
+    const firstResult =
+        opts.mode === "two-stage"
+            ? await runTwoStage(opts.apiKey, firstMessage, undefined, opts.usageEntries)
+            : await runSingleStage(
+                  opts.apiKey,
+                  opts.variant === "fast" ? "single_fast" : "single_thinking",
+                  firstMessage,
+                  undefined,
+                  opts.usageEntries
+              );
+    const firstMs = Date.now() - firstT0;
+
+    let secondResult: SafetyCheckResult | null = null;
+    let filesRequested: string[] | undefined;
+    let filesResolved: string[] | undefined;
+    let secondMs = 0;
+    let secondCallAttempted = false;
+
+    if (firstResult && firstResult.decision === "needs_context") {
+        filesRequested = firstResult.files ?? [];
+        if (filesRequested.length > 0) {
+            const files = await resolveRequestedFiles(filesRequested, opts.fileCache);
+            filesResolved = Array.from(files.keys());
+            const secondMessage = buildUserMessage(opts.toolName, opts.toolInput, {
+                files,
+                taskContext: taskContext || undefined,
+                claudeMd: opts.claudeMd,
+            });
+            const secondStage: "s2" | "single_thinking" = opts.mode === "two-stage" ? "s2" : "single_thinking";
+            const secondT0 = Date.now();
+            secondCallAttempted = true;
+            secondResult = await runStage(opts.apiKey, secondStage, secondMessage, undefined, opts.usageEntries);
+            secondMs = Date.now() - secondT0;
+        }
+    }
+
+    const delta = opts.usageEntries.slice(beforeIdx);
+    opts.stageRecords.push(
+        ...buildStageRecords(
+            opts.contextLevel,
+            opts.mode,
+            opts.variant,
+            delta,
+            firstResult,
+            secondResult,
+            filesRequested,
+            filesResolved,
+            firstMs,
+            secondMs
+        )
+    );
+
+    // If we attempted a needs_context re-run and it failed, treat the whole
+    // evaluation as a classifier failure (matches pre-auto behavior).
+    if (secondCallAttempted && !secondResult) return null;
+    if (secondResult) return secondResult;
+    return firstResult;
+}
+
 /**
  * Send a tool action to the Claude API for safety evaluation.
  *
  * Supports all tool types (Bash, Edit, Write, WebFetch, Agent, MCP, etc.).
- * For Bash commands, uses a two-pass approach: the first call may return
- * "needs_context" with file paths to inspect. If so, a second call is made
- * with the file contents included.
- *
- * Returns the parsed decision, or null if the API call fails.
+ * In `safety.context_level: "auto"` mode, the classifier evaluates at
+ * `user-only` first; if the verdict is "prompt", it re-evaluates at `full`
+ * (rerunning S1 + S2 with the richer transcript, reusing already-fetched
+ * file contents from the in-decision cache). Approve/deny short-circuits.
  */
 export async function checkToolSafety(
     toolName: string,
     toolInput: Record<string, unknown>,
-    options?: { cwd?: string; taskContext?: string }
+    options?: {
+        cwd?: string;
+        taskContext?: string;
+        transcriptPath?: string;
+        sessionId?: string;
+        /**
+         * Optional out-parameter: the same usageEntries array used internally
+         * is also returned to the caller, so partial usage from any successful
+         * API calls is visible even when the overall result is null (full
+         * classifier failure) or a non-decisive verdict.
+         */
+        usageEntriesOut?: ApiUsageEntry[];
+    }
 ): Promise<SafetyCheckResult | null> {
     const apiKey = getApiKey();
     if (!apiKey) {
@@ -306,59 +521,113 @@ export async function checkToolSafety(
         return null;
     }
 
-    const cached = approvalCache.get(toolName, toolInput);
-    if (cached) return cached;
-
+    const baseConfig = validateContextLevelConfig(configGet("safety.context_level", "user-only") || "user-only");
+    const levels: ContextLevel[] = baseConfig === "auto" ? ["user-only", "full"] : [baseConfig];
     const mode = validateMode(configGet("safety.classifier_mode", "two-stage") || "two-stage");
     const variant = validateVariant(configGet("safety.single_stage_variant", "thinking") || "thinking");
-
+    const debugLogPath = configGet("safety.debug_log") || undefined;
     const claudeMd = readClaudeMd(options?.cwd) ?? undefined;
 
-    // Accumulator for per-stage usage/model. Each successful API call pushes
-    // one entry; we aggregate them onto the final result so the bin entry
-    // can forward the totals on the top-level stdout JSON envelope.
-    const usageEntries: ApiUsageEntry[] = [];
+    const decisionId = randomUUID();
+    const decisionT0 = Date.now();
+    const usageEntries: ApiUsageEntry[] = options?.usageEntriesOut ?? [];
+    const stages: SafetyStageRecord[] = [];
+    const fileCache = new Map<string, string>();
+
+    // Cache lookup tries each level in escalation order - an approve cached at
+    // user-only counts as a hit for an auto-mode user-only pass, and likewise
+    // for full. Decisions made at different levels are NOT interchangeable.
+    for (const level of levels) {
+        const cached = approvalCache.get(toolName, toolInput, level);
+        if (cached) {
+            if (debugLogPath) {
+                const log: SafetyDecisionLog = {
+                    ts: new Date().toISOString(),
+                    decision_id: decisionId,
+                    session_id: options?.sessionId,
+                    tool_name: toolName,
+                    tool_input_summary: formatToolInput(toolName, toolInput),
+                    classifier_mode: mode,
+                    single_stage_variant: mode === "single-stage" ? variant : null,
+                    context_level_base: baseConfig,
+                    stages: [],
+                    final: { decision: cached.decision ?? "approve", reason: cached.reason },
+                    api_calls: 0,
+                    total_ms: Date.now() - decisionT0,
+                    cache_hit: true,
+                };
+                writeDecisionLog(log, debugLogPath);
+            }
+            return cached;
+        }
+    }
+
+    let finalResult: SafetyCheckResult | null = null;
+    let levelOfFinal: ContextLevel = levels[0];
 
     try {
-        // Pass 1: initial assessment
-        const firstMessage = buildUserMessage(toolName, toolInput, {
-            taskContext: options?.taskContext,
-            claudeMd,
-        });
-        const firstResult =
-            mode === "two-stage"
-                ? await runTwoStage(apiKey, firstMessage, undefined, usageEntries)
-                : await runSingleStage(apiKey, variant === "fast" ? "single_fast" : "single_thinking", firstMessage, undefined, usageEntries);
-        if (!firstResult) return null;
+        for (const level of levels) {
+            const result = await evaluateAtLevel({
+                apiKey,
+                contextLevel: level,
+                toolName,
+                toolInput,
+                transcriptPath: options?.transcriptPath,
+                explicitTaskContext: options?.taskContext,
+                claudeMd,
+                mode,
+                variant,
+                fileCache,
+                usageEntries,
+                stageRecords: stages,
+            });
 
-        // If the model can decide without file contents, return immediately
-        if (firstResult.decision !== "needs_context") {
-            const enriched = attachUsage(firstResult, usageEntries);
-            if (enriched.decision === "approve") approvalCache.set(toolName, toolInput, enriched);
-            return enriched;
+            if (!result) {
+                finalResult = null;
+                levelOfFinal = level;
+                break;
+            }
+
+            finalResult = result;
+            levelOfFinal = level;
+
+            if (result.decision === "approve" || result.decision === "deny") break;
+            // "prompt" or fallback - escalate to next level if one exists
         }
-
-        // Pass 2: resolve requested files and re-evaluate (Bash only)
-        // Skip S1 - go straight to the deeper stage (S2 in two-stage mode, single_thinking otherwise)
-        const requestedPaths = firstResult.files ?? [];
-        if (requestedPaths.length === 0) return attachUsage(firstResult, usageEntries);
-
-        const files = await resolveRequestedFiles(requestedPaths);
-        const secondMessage = buildUserMessage(toolName, toolInput, {
-            files,
-            taskContext: options?.taskContext,
-            claudeMd,
-        });
-        const secondStage: "s2" | "single_thinking" = mode === "two-stage" ? "s2" : "single_thinking";
-        const secondResult = await runStage(apiKey, secondStage, secondMessage, undefined, usageEntries);
-        if (!secondResult) return null;
-        const enriched = attachUsage(secondResult, usageEntries);
-        if (enriched.decision === "approve") approvalCache.set(toolName, toolInput, enriched);
-        return enriched;
     } catch (e) {
         process.stderr.write(`LLM safety check failed: ${e instanceof Error ? e.message : String(e)}\n`);
-        return null;
+        finalResult = null;
     }
+
+    const enriched = finalResult ? attachUsage(finalResult, usageEntries) : null;
+    if (enriched && enriched.decision === "approve") {
+        approvalCache.set(toolName, toolInput, levelOfFinal, enriched);
+    }
+
+    if (debugLogPath) {
+        const aggregated = aggregateUsage(usageEntries);
+        const log: SafetyDecisionLog = {
+            ts: new Date().toISOString(),
+            decision_id: decisionId,
+            session_id: options?.sessionId,
+            tool_name: toolName,
+            tool_input_summary: formatToolInput(toolName, toolInput),
+            classifier_mode: mode,
+            single_stage_variant: mode === "single-stage" ? variant : null,
+            context_level_base: baseConfig,
+            stages,
+            final: enriched
+                ? { decision: enriched.decision ?? "prompt", reason: enriched.reason }
+                : { decision: "unavailable", reason: "Classifier API failure" },
+            api_calls: usageEntries.length,
+            total_usage: aggregated,
+            total_ms: Date.now() - decisionT0,
+            cache_hit: false,
+        };
+        writeDecisionLog(log, debugLogPath);
+    }
+
+    return enriched;
 }
 
 /**
@@ -381,32 +650,50 @@ export async function checkCommandSafety(toolName: string, toolInput: Record<str
  * Process a hook input object and return the hook output.
  *
  * This is the main entry point for the safety check - it handles the full
- * hook protocol: read input, call the LLM, and return the appropriate
- * hook response object (or null to fall through).
+ * hook protocol: read input, call the LLM, and return a populated
+ * HookOutput. The output's `decision` is one of:
+ *   - "allow"  - permission granted (CC bypasses the prompt)
+ *   - "deny"   - permission refused (CC blocks the action)
+ *   - "prompt" - no decision; CC's normal permission flow runs
+ *
+ * In all three cases the output carries `usage` and `model` whenever any
+ * classifier API call ran, so the bin entry can always emit them at the top
+ * level of the JSON envelope - allowing the spend accumulator to see safety
+ * hook tokens for every outcome, not just allow.
  */
-export async function processHookInput(input: HookInput): Promise<HookOutput | null> {
+export async function processHookInput(input: HookInput): Promise<HookOutput> {
     // Fast-path: skip LLM for clearly safe tools/commands
     const fastReason = isFastApprove(input.tool_name, input.tool_input, input.cwd);
     if (fastReason) {
         return { decision: "allow", reason: fastReason };
     }
 
-    // Extract task context from transcript based on configured level
-    const contextLevel = (configGet("safety.context_level", "user-only") || "user-only") as "full" | "user-only" | "none";
-    const taskContext = input.transcript_path ? extractTaskContext(input.transcript_path, contextLevel) : "";
-
+    // checkToolSafety now owns transcript extraction so it can re-extract at
+    // a different context level when running in auto mode. We thread an
+    // out-parameter for usage entries so partial usage from any successful
+    // API calls is still recoverable when the overall result is null.
+    const usageEntries: ApiUsageEntry[] = [];
     const result = await checkToolSafety(input.tool_name, input.tool_input, {
         cwd: input.cwd,
-        taskContext: taskContext || undefined,
+        transcriptPath: input.transcript_path,
+        sessionId: input.session_id,
+        usageEntriesOut: usageEntries,
     });
+
+    const aggregatedUsage = aggregateUsage(usageEntries);
+    const lastModelName = lastModel(usageEntries);
+    const usageFields = {
+        ...(aggregatedUsage && { usage: aggregatedUsage }),
+        ...(lastModelName && { model: lastModelName }),
+    };
 
     const failClosed = String(configGet("safety.fail_closed", "false") || "false").toLowerCase() === "true";
 
     if (!result) {
         if (failClosed) {
-            return { decision: "deny", reason: "Safety classifier unavailable - blocking for safety (fail_closed mode)" };
+            return { decision: "deny", reason: "Safety classifier unavailable - blocking for safety (fail_closed mode)", ...usageFields };
         }
-        return null;
+        return { decision: "prompt", reason: "Safety classifier unavailable", ...usageFields };
     }
 
     const decision = result.decision ?? "prompt";
@@ -415,12 +702,7 @@ export async function processHookInput(input: HookInput): Promise<HookOutput | n
 
     if (decision === "approve") {
         if (sessionId) resetConsecutiveBlocks(sessionId);
-        return {
-            decision: "allow",
-            reason,
-            ...(result.usage && { usage: result.usage }),
-            ...(result.model && { model: result.model }),
-        };
+        return { decision: "allow", reason, ...usageFields };
     } else if (decision === "deny") {
         // Track block count for graceful degradation
         if (sessionId) {
@@ -429,20 +711,14 @@ export async function processHookInput(input: HookInput): Promise<HookOutput | n
                 process.stderr.write(
                     `LLM safety check: ${state.consecutiveDenials} consecutive / ${state.totalDenials} total blocks - falling back to user prompt\n`
                 );
-                // Downgrade to prompt instead of hard deny
-                return null;
+                return { decision: "prompt", reason: `Degraded after ${state.consecutiveDenials} consecutive blocks`, ...usageFields };
             }
         }
-        return {
-            decision: "deny",
-            reason,
-            ...(result.usage && { usage: result.usage }),
-            ...(result.model && { model: result.model }),
-        };
+        return { decision: "deny", reason, ...usageFields };
     }
     // "prompt" or "needs_context" (fallback) - fall through to normal permission dialog
     if (reason) {
         process.stderr.write(`LLM safety check [prompt]: ${reason}\n`);
     }
-    return null;
+    return { decision: "prompt", reason, ...usageFields };
 }

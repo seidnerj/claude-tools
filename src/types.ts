@@ -303,7 +303,13 @@ export interface HookInput {
 
 /** Output to return to the Claude Code hook system */
 export interface HookOutput {
-    decision: "allow" | "deny";
+    /**
+     * "allow" / "deny" make decisions; "prompt" is a fall-through (no
+     * permission decision attached) carrying any usage/model collected
+     * during evaluation, so token cost is always reported to the caller
+     * regardless of outcome.
+     */
+    decision: "allow" | "deny" | "prompt";
     reason: string;
     updatedInput?: Record<string, unknown>;
     additionalContext?: string;
@@ -320,15 +326,49 @@ export interface HookOutput {
 
 export type ClassifierMode = "two-stage" | "single-stage";
 export type SingleStageVariant = "fast" | "thinking";
+export type ContextLevel = "full" | "user-only" | "none";
+export type ContextLevelConfig = ContextLevel | "auto";
+
+/** One row inside SafetyDecisionLog.stages - records a single classifier API call. */
+export interface SafetyStageRecord {
+    stage: "S1" | "S2" | "single_fast" | "single_thinking";
+    context_level_used: ContextLevel;
+    with_files: boolean;
+    files_requested?: string[];
+    files_resolved?: string[];
+    model?: string;
+    usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
+    parsed?: { decision?: string; reason?: string; files?: string[] };
+    ms: number;
+}
+
+/** Per-decision log entry emitted to safety.debug_log when configured. */
+export interface SafetyDecisionLog {
+    ts: string;
+    decision_id: string;
+    session_id?: string;
+    tool_name: string;
+    tool_input_summary: string;
+    classifier_mode: ClassifierMode;
+    single_stage_variant: SingleStageVariant | null;
+    context_level_base: ContextLevelConfig;
+    stages: SafetyStageRecord[];
+    final: { decision: string; reason?: string };
+    api_calls: number;
+    total_usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
+    total_ms: number;
+    cache_hit: boolean;
+}
 
 /** Safety hook configuration stored in ~/.claude/key-config.json under "safety" */
 export interface SafetyConfig {
     model: string;
-    context_level: "full" | "user-only" | "none";
+    context_level: ContextLevelConfig;
     classifier_mode?: ClassifierMode;
     single_stage_variant?: SingleStageVariant;
     fail_closed?: boolean;
     user_rules?: SafetyUserRules;
+    debug_log?: string;
 }
 
 /** Block count state for graceful degradation, persisted per session */

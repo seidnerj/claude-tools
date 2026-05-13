@@ -108,6 +108,7 @@ Requires `ANTHROPIC_API_KEY` env var or a key stored in macOS Keychain under "Cl
     - `"none"` - no transcript access (maximum isolation)
     - `"user-only"` (default) - user messages only (no assistant text or tool calls)
     - `"full"` - user + assistant text + prior tool_use blocks (read-only tools filtered)
+    - `"auto"` - evaluate at `user-only` first; if the final verdict is `prompt`, re-run the full S1+S2 flow at `full` (rerunning S1 with the richer context; resolved files are cached across passes so disk I/O happens at most once per file per decision). Approve/deny short-circuits without escalation. Cache entries are keyed on the context level the decision was made at, so a `user-only` approve does not satisfy a later `full` lookup.
 - `classifier_mode` (default `"two-stage"`) - `"two-stage"` runs a 64-token strict S1 gate then escalates ambiguous actions to a full S2 evaluation; `"single-stage"` runs one classifier call per action.
 - `single_stage_variant` (default `"thinking"`) - only used when `classifier_mode: "single-stage"`. `"thinking"` is JSON output with extended thinking enabled; `"fast"` is a 256-token XML verdict (`<block>yes/no</block>`) with stop-sequence truncation for minimum latency.
 - `fail_closed` (default `false`) - `true` denies the action when the classifier API is unavailable (for unattended/CI runs); `false` falls through to the standard CC permission prompt (the default, fail-open).
@@ -115,6 +116,30 @@ Requires `ANTHROPIC_API_KEY` env var or a key stored in macOS Keychain under "Cl
     - `block_rules` - additional BLOCK conditions appended to the system prompt
     - `allow_rules` - additional ALLOW exceptions appended to the system prompt
     - `environment` - trusted infrastructure listed in the prompt's environment section
+- `debug_log` - if set, every safety decision appends one JSONL line with the full classifier chain (per-stage records, context level used, model, usage, files requested/resolved, final verdict, cache_hit). The value is interpreted as follows:
+    - Path exists and is a directory -> daily file `safety-YYYY-MM-DD.jsonl` is appended inside it
+    - Path exists and is a file -> log lines are appended to that file
+    - Path does not exist and the basename has a dot (e.g. `/var/log/safety.jsonl`) -> file path, created on first write
+    - Path does not exist and the basename has no dot (e.g. `/tmp/claude-safety`) -> directory, created on first write, daily file inside
+    - Unset/empty disables logging.
+
+#### Suggested CLAUDE.md directives
+
+Some legitimate actions trigger prompts because of how they're _shaped_, not because of what they actually do. Adding the following section to your global `~/.claude/CLAUDE.md` (or to a project's `CLAUDE.md`) guides Claude to frame legitimate work in ways the classifier can recognize, cutting down false-positive prompts without weakening the safety posture:
+
+```md
+## Avoiding False-Positive Safety Prompts
+
+A local LLM safety hook reviews tool calls before execution. Routine legitimate actions sometimes prompt because of how they're shaped, not because of what they actually do. Frame legitimate work so the classifier can recognize it:
+
+- **Prefer dedicated tools over Bash:** Use Read/Edit/Write instead of cat/sed/echo. These fast-approve when the path is inside the working directory; the Bash equivalents do not.
+- **Compound `cd X && cmd` frequently triggers built-in safety prompts**, even when otherwise innocuous. Use absolute paths in both the command and any redirect target, or run `cd` separately.
+- **Chain within a risk class, split across:** `git fetch && git rebase && npm test` is fine - homogeneous dev-loop operations. Mixing reads with writes, or local with remote side-effects, in one chain makes scope evaluation harder. Independent operations can run as separate Bash calls in a single message (they execute in parallel, so splitting costs no extra turns).
+- **Avoid shell expansion of opaque values:** Don't compose commands via `$(cat ... | python3 -c ...)` or `"$VAR"` from arbitrary sources interpolated into longer commands. Read values directly inside the target script.
+- **Persistent capability changes need explicit, specific user intent:** Commands like `claude mcp add`, `~/.claude/*.json` edits, shell profile edits, cron, launchctl get extra scrutiny. They can auto-approve when the user explicitly asked for that exact change, but prompt when the agent inferred the need mid-task or when the request was vague. Execute when the user spelled it out; otherwise propose the exact command instead of running it.
+- **Honest descriptions echo the user's verb:** The Bash `description` field is visible to the classifier and to the user. For destructive actions, use the user's word (delete/remove/drop/overwrite) so the user-intent ALLOW path can apply.
+- **Avoid sourcing-from-internet and exfil shapes:** No `curl ... | sh`, no `gh gist create` of unsolicited content, no `nc`/`scp` to non-project hosts. These are unambiguous BLOCK patterns.
+```
 
 ### LLM Safety Hook vs. Claude Code Auto Mode
 

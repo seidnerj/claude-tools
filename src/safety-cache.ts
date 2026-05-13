@@ -7,7 +7,7 @@
 // ---------------------------------------------------------------------------
 
 import { createHash } from "node:crypto";
-import type { SafetyCheckResult } from "./types.js";
+import type { SafetyCheckResult, ContextLevel } from "./types.js";
 
 const DEFAULT_MAX_ENTRIES = 256;
 
@@ -20,8 +20,8 @@ function sortKeysDeep(value: unknown): unknown {
     return out;
 }
 
-function hashKey(toolName: string, toolInput: Record<string, unknown>): string {
-    const payload = JSON.stringify({ tool: toolName, input: sortKeysDeep(toolInput) });
+function hashKey(toolName: string, toolInput: Record<string, unknown>, contextLevel: ContextLevel): string {
+    const payload = JSON.stringify({ tool: toolName, input: sortKeysDeep(toolInput), context_level: contextLevel });
     return createHash("sha256").update(payload).digest("hex");
 }
 
@@ -30,8 +30,8 @@ export class ApprovalCache {
 
     constructor(private readonly maxEntries: number = DEFAULT_MAX_ENTRIES) {}
 
-    get(toolName: string, toolInput: Record<string, unknown>): SafetyCheckResult | null {
-        const key = hashKey(toolName, toolInput);
+    get(toolName: string, toolInput: Record<string, unknown>, contextLevel: ContextLevel): SafetyCheckResult | null {
+        const key = hashKey(toolName, toolInput, contextLevel);
         const hit = this.store.get(key);
         if (!hit) return null;
         // Refresh LRU order
@@ -40,9 +40,9 @@ export class ApprovalCache {
         return hit;
     }
 
-    set(toolName: string, toolInput: Record<string, unknown>, result: SafetyCheckResult): void {
+    set(toolName: string, toolInput: Record<string, unknown>, contextLevel: ContextLevel, result: SafetyCheckResult): void {
         if (result.decision !== "approve") return;
-        const key = hashKey(toolName, toolInput);
+        const key = hashKey(toolName, toolInput, contextLevel);
         this.store.delete(key);
         this.store.set(key, result);
         while (this.store.size > this.maxEntries) {

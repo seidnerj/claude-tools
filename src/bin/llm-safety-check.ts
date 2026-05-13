@@ -34,10 +34,16 @@ async function main(): Promise<void> {
 
     const result = await processHookInput(input);
 
-    if (!result) {
-        // No decision or API failure - fall through to normal handling
-        process.exit(0);
-    }
+    // Top-level `usage` and `model` are emitted on EVERY outcome so any
+    // consumer that recognizes them (e.g. an out-of-process hook-output
+    // post-processor) can route the aggregated cost of all classifier sub-
+    // actions (S1, S2, S2-with-files, plus auto-mode escalation passes at
+    // `full`) into Claude Code's spend accumulator. Omitted only on fast-
+    // path hits where no LLM ran at all.
+    const usageEnvelope: Record<string, unknown> = {
+        ...(result.usage && { usage: result.usage }),
+        ...(result.model && { model: result.model }),
+    };
 
     if (result.decision === "allow") {
         const output: Record<string, unknown> = {
@@ -48,25 +54,34 @@ async function main(): Promise<void> {
                 ...(result.additionalContext && { additionalContext: result.additionalContext }),
                 ...(result.updatedInput && { updatedInput: result.updatedInput }),
             },
-            // Optional top-level `usage` and `model` are emitted so any
-            // consumer that recognizes them (e.g. an out-of-process hook-output
-            // post-processor) can route them into CC's in-process spend
-            // accumulator. Omitted on fast-path hits where no LLM ran.
-            ...(result.usage && { usage: result.usage }),
-            ...(result.model && { model: result.model }),
+            ...usageEnvelope,
         };
         process.stdout.write(JSON.stringify(output) + "\n");
         process.exit(0);
     } else if (result.decision === "deny") {
+        // Emit a JSON envelope with the explicit deny decision so the usage
+        // envelope flows through alongside the block. Also write the human-
+        // readable reason to stderr, and exit 2 to preserve the "blocking
+        // error" exit code semantic some integrations rely on.
+        const output: Record<string, unknown> = {
+            hookSpecificOutput: {
+                hookEventName: "PreToolUse",
+                permissionDecision: "deny",
+                permissionDecisionReason: result.reason,
+            },
+            ...usageEnvelope,
+        };
+        process.stdout.write(JSON.stringify(output) + "\n");
         process.stderr.write(`Blocked by safety check: ${result.reason}\n`);
-        // Even though deny exits non-zero (no JSON envelope is produced for
-        // CC to parse), the API tokens spent reaching the deny verdict are
-        // visible to the caller via the HookOutput.usage/model fields above
-        // when wired into other transports.
         process.exit(2);
     }
 
-    // Anything else - fall through
+    // Fall-through: emit usage envelope only (no hookSpecificOutput), so
+    // Claude Code falls back to its normal permission flow while the spend
+    // accumulator still sees the tokens we burned reaching the verdict.
+    if (Object.keys(usageEnvelope).length > 0) {
+        process.stdout.write(JSON.stringify(usageEnvelope) + "\n");
+    }
     process.exit(0);
 }
 

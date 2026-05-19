@@ -5,7 +5,7 @@
 // Resolution order on every directory entry:
 //   1. Inference chain: ~/.claude-tools/directories.json maps base64(PWD)
 //      to a chain-id; ~/.claude-tools/chains/<chain-id>.json is the chain
-//      config. When found, exports CLAUDE_INFERENCE_CONFIG to that path so
+//      config. When found, exports _CLAUDE_INFERENCE_CONFIG to that path so
 //      a compatible Claude Code build picks it up.
 //   2. Per-directory keychain entries (fallback): "Claude Code <base64-PWD>"
 //      holds an API key, ":admin" suffix holds an admin session key. When
@@ -28,8 +28,8 @@ export const ENVRC_SNIPPET = `# managed by claude-tools
 _CC_PWDB64=$(echo -n "$PWD" | base64)
 _CC_CHAIN_ID=$(python3 -c 'import json,os,sys; p=os.path.expanduser("~/.claude-tools/directories.json"); d=json.load(open(p)) if os.path.exists(p) else {}; print(d.get(sys.argv[1],""))' "$_CC_PWDB64" 2>/dev/null)
 if [ -n "$_CC_CHAIN_ID" ] && [ -f "$HOME/.claude-tools/chains/$_CC_CHAIN_ID.json" ]; then
-  export CLAUDE_INFERENCE_CONFIG="$HOME/.claude-tools/chains/$_CC_CHAIN_ID.json"
-  _CC_CHAIN_NAME=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("name", sys.argv[2]))' "$CLAUDE_INFERENCE_CONFIG" "$_CC_CHAIN_ID" 2>/dev/null)
+  export _CLAUDE_INFERENCE_CONFIG="$HOME/.claude-tools/chains/$_CC_CHAIN_ID.json"
+  _CC_CHAIN_NAME=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("name", sys.argv[2]))' "$_CLAUDE_INFERENCE_CONFIG" "$_CC_CHAIN_ID" 2>/dev/null)
   printf '\\033[36mdirenv: inference chain: %s\\033[0m\\n' "\${_CC_CHAIN_NAME:-$_CC_CHAIN_ID}" >&2
   unset _CC_CHAIN_NAME
 else

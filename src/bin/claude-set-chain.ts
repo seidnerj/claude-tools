@@ -7,7 +7,7 @@
 // (maps base64(directory) -> chain-id).
 //
 // When direnv enters a directory with an assignment, the central envrc
-// (~/.claude-tools/envrc.sh) exports CLAUDE_INFERENCE_CONFIG to the chain's
+// (~/.claude-tools/envrc.sh) exports _CLAUDE_INFERENCE_CONFIG to the chain's
 // JSON path so a compatible Claude Code build picks it up.
 // ---------------------------------------------------------------------------
 

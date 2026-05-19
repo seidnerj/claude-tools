@@ -443,7 +443,7 @@ describe("ensureEnvrc", () => {
         ensureEnvrc(tmpDir);
         const central = fs.readFileSync(CENTRAL_ENVRC_PATH, "utf-8");
         expect(central).toContain("managed by claude-tools");
-        expect(central).toContain("CLAUDE_INFERENCE_CONFIG");
+        expect(central).toContain("_CLAUDE_INFERENCE_CONFIG");
         expect(central).toContain("ANTHROPIC_API_KEY");
     });
 

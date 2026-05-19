@@ -49,6 +49,16 @@ export {
     hasZshHook,
     installZshHook,
 } from "./set-key.js";
+export { CHAINS_DIR, chainExists, chainPath, deleteChain, listChainIds, listChains, readChain, writeChain } from "./auth/chains.js";
+export type { Account, AdminSessionKeys, ChainConfig, ChainTier, KeyEntry, PoolEntry, RetryPolicy } from "./auth/chains.js";
+export {
+    DIRECTORIES_FILE,
+    directoriesUsingChain,
+    getDirectoryChain,
+    listDirectoryAssignments,
+    setDirectoryChain,
+    unsetDirectoryChain,
+} from "./auth/directories.js";
 export {
     checkCommandSafety,
     checkToolSafety,

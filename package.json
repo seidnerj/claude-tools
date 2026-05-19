@@ -6,6 +6,7 @@
         "claude-find-session": "dist/bin/claude-find-session.js",
         "claude-import-session": "dist/bin/claude-import-session.js",
         "claude-redact-secrets": "dist/bin/claude-redact-secrets.js",
+        "claude-set-chain": "dist/bin/claude-set-chain.js",
         "claude-set-history": "dist/bin/claude-set-history.js",
         "claude-set-key": "dist/bin/claude-set-key.js",
         "claude-status": "dist/bin/claude-status.js",

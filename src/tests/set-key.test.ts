@@ -443,8 +443,8 @@ describe("ensureEnvrc", () => {
         ensureEnvrc(tmpDir);
         const central = fs.readFileSync(CENTRAL_ENVRC_PATH, "utf-8");
         expect(central).toContain("managed by claude-tools");
-        expect(central).toContain("USR1");
-        expect(central).toContain("_cc_fmt_cents");
+        expect(central).toContain("CLAUDE_INFERENCE_CONFIG");
+        expect(central).toContain("ANTHROPIC_API_KEY");
     });
 
     it("reports alreadyPresent when source line is already in .envrc", () => {
